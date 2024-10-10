@@ -62,7 +62,7 @@ import kotlin.time.toDuration
  */
 class StreamerDownloadManager(
   private val app: App,
-  private val streamer: Streamer,
+  private var streamer: Streamer,
   private val plugin: Download<DownloadConfig>,
   private val downloadSemaphore: Semaphore,
 ) {
@@ -107,6 +107,11 @@ class StreamerDownloadManager(
    * Flag to check if the download is in the timer range
    */
   private var inTimerRange = true
+
+  /**
+   * Timer job to stop the download after the timer ends
+   */
+  private var stopTimerJob: Job? = null
 
   /**
    * Callback to handle download events
@@ -213,7 +218,8 @@ class StreamerDownloadManager(
           is FatalDownloadErrorException, is CancellationException -> {
             streamer.isLive = false
             callback?.onLiveStatusChanged(streamer, false)
-            logger.error("${streamer.name} invalid exception", e)
+            if (e is FatalDownloadErrorException)
+              logger.error("${streamer.name} fatal exception", e)
             throw e
           }
 
@@ -251,11 +257,13 @@ class StreamerDownloadManager(
       isCancelled.collect {
         if (it) {
           val result = stop(UserStoppedDownloadException())
-          logger.info("${streamer.name} download stopped with result : $result")
-          if (!isDownloading) {
-            logger.info("${streamer.name} download canceled, not in progress")
-            this@supervisorScope.cancel("Download cancelled")
+          logger.info("${streamer.name} download stopped: $result")
+          // cancel the timer job if it's active
+          if (stopTimerJob?.isActive == true) {
+            stopTimerJob?.cancel()
           }
+          stopTimerJob = null
+          this@supervisorScope.cancel("Download cancelled")
         }
       }
     }
@@ -270,8 +278,7 @@ class StreamerDownloadManager(
       val recordEndTime = streamer.endTime
       if (recordStartTime != null && recordEndTime != null) {
         if (recordStartTime == recordEndTime) {
-          logger.error("${streamer.name} stream is not live, start time and end time are the same")
-          throw CancellationException("SAME_START_END_TIME")
+          throw CancellationException("${streamer.name} SAME_START_END_TIME")
         }
         handleTimerDuration(recordStartTime, recordEndTime)
       }
@@ -309,12 +316,13 @@ class StreamerDownloadManager(
   private suspend fun stop(exception: Exception? = null): Boolean = plugin.stopDownload(exception)
 
   fun cancel() {
-    logger.info("Cancelling download for ${streamer.name}, isDownloading : $isDownloading")
+    logger.info("${streamer.name} try cancel, isDownloading: {}", isDownloading)
     isCancelled.value = true
   }
 
-  suspend fun cancelBlocking() {
-    logger.info("Cancelling download for ${streamer.name}, isDownloading : $isDownloading")
+  suspend fun cancelBlocking(newStreamer: Streamer) {
+    logger.info("${streamer.name} try cancel, isDownloading: {}", isDownloading)
+    updateStreamer(newStreamer)
     isCancelled.emit(true)
   }
 
@@ -323,17 +331,25 @@ class StreamerDownloadManager(
     this.callback = callback
   }
 
+  fun updateStreamer(newStreamer: Streamer) {
+    this.plugin.updateStreamer(newStreamer)
+    this.streamer = newStreamer
+  }
+
 
   private suspend fun CoroutineScope.handleTimerDuration(definedStartTime: String, definedStopTime: String) {
 
     fun CoroutineScope.launchStopTask(duration: Long) {
-      logger.info("${streamer.name} stopping download after $duration ms")
-      launch {
+      logger.debug("(${streamer.name}) stopping download after $duration ms")
+      if (stopTimerJob?.isActive == true) {
+        stopTimerJob?.cancel()
+      }
+      stopTimerJob = launch {
         delay(duration)
         inTimerRange = false
         if (isDownloading) {
           val result = stop(TimerEndedDownloadException())
-          logger.info("${streamer.name} download stopped with result : $result")
+          logger.info("(${streamer.name}) timer task stop triggered: $result")
           resetStreamerLiveStatus()
         }
       }
@@ -373,8 +389,10 @@ class StreamerDownloadManager(
       }
 
       else -> {
-        logger.info("${streamer.name} outside timer range")
+        // should not reach here
         inTimerRange = false
+        logger.error("${streamer.name} outside timer range")
+        throw CancellationException("${streamer.name} outside timer range")
         return
       }
     }

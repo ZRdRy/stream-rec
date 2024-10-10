@@ -24,30 +24,15 @@
  * SOFTWARE.
  */
 
-package github.hua0512.flv.exceptions
-
-
-/**
- * Base FLV error exception
- * @param message error message
- */
-open class FlvErrorException(override val message: String) : IllegalArgumentException(message)
+package github.hua0512.plugins.douyin.download
 
 /**
- * FLV data error exception
+ * File containing the constants for the Douyin cookie
  * @author hua0512
- * @date : 2024/6/9 10:43
+ * @date : 2024/10/6 16:40
  */
-class FlvDataErrorException(override val message: String) : FlvErrorException(message)
 
-/**
- * FLV header error exception
- * @param message error message
- */
-class FlvHeaderErrorException(override val message: String) : FlvErrorException(message)
 
-/**
- * FLV tag header error exception
- * @param message error message
- */
-class FlvTagHeaderErrorException(override val message: String) : FlvErrorException(message)
+internal const val ODIN_TT_COOKIE = "odin_tt"
+internal const val TT_WID_COOKIE = "ttwid"
+internal const val AC_NONCE_COOKIE = "__ac_nonce"

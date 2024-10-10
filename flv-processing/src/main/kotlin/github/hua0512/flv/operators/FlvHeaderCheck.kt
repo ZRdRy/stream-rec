@@ -27,54 +27,40 @@
 package github.hua0512.flv.operators
 
 import github.hua0512.flv.data.FlvData
+import github.hua0512.flv.data.FlvHeader
+import github.hua0512.flv.utils.isHeader
 import github.hua0512.plugins.StreamerContext
 import github.hua0512.utils.logger
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
-import java.util.LinkedList
-import java.util.Queue
 
 
-private const val NUM_LAST_TAGS = 195
-private const val MAX_DURATION = 2000
-
-private const val TAG = "FlvDuplicateRule"
-private val logger = logger(TAG)
+private const val TAG = "FlvHeaderCheckRule"
+private val LOGGER by lazy { logger(TAG) }
 
 /**
- * Simple duplicate elimination rule.
- * This rule eliminates duplicate tags based on the CRC32 value of the tag.
- * The rule keeps track of the last 200 tags and eliminates any tag that has the same CRC32 value as any of the last 200 tags.
- * @receiver Flow<FlvData> The flow of FlvData to process.
- * @return Flow<FlvData> A flow of FlvData with duplicate tags eliminated.
+ * Rule to check FLV header is present at the first position of the flow.
  * @author hua0512
- * @date : 2024/9/17 13:38
+ * @date : 2024/10/6 12:44
  */
-internal fun Flow<FlvData>.removeDuplicates(context: StreamerContext, gopCount: MutableStateFlow<Int>, enable: Boolean = true): Flow<FlvData> =
-  if (enable) flow {
-    val lastTags: Queue<Long> = LinkedList()
+fun Flow<FlvData>.checkHeader(streamerContext: StreamerContext): Flow<FlvData> = flow {
+  var num = 0
 
-    fun reset() {
-      lastTags.clear()
+  collect { data ->
+
+    if (num == 0 && data.isHeader()) {
+      emit(data)
+      num++
+      return@collect
+    } else if (num == 0 && data.isHeader().not()) {
+      val innerHeader = FlvHeader.default()
+      LOGGER.warn("${streamerContext.name} FLV header is missing, inserted a default header")
+      emit(innerHeader)
+      num++
     }
 
-    collect { flvData ->
-      if (lastTags.contains(flvData.crc32)) {
-        logger.warn("${context.name} skipping duplicated tag: {}", flvData)
-        return@collect
-      }
+    emit(data)
+  }
 
-      lastTags.add(flvData.crc32)
-
-      while (lastTags.size > gopCount.value) {
-        lastTags.remove()
-      }
-
-//      logger.debug("${context.name} gopCount: ${gopCount.value}, lastTags: ${lastTags.size}")
-      emit(flvData)
-    }
-
-    reset()
-    gopCount.value = 0
-  } else this
+  num = 0
+}

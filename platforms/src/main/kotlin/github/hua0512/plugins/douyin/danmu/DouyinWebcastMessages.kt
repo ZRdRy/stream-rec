@@ -24,30 +24,20 @@
  * SOFTWARE.
  */
 
-package github.hua0512.flv.exceptions
-
-
-/**
- * Base FLV error exception
- * @param message error message
- */
-open class FlvErrorException(override val message: String) : IllegalArgumentException(message)
+package github.hua0512.plugins.douyin.danmu
 
 /**
- * FLV data error exception
  * @author hua0512
- * @date : 2024/6/9 10:43
+ * @date : 2024/10/6 21:43
  */
-class FlvDataErrorException(override val message: String) : FlvErrorException(message)
+enum class DouyinWebcastMessages(val className: String) {
 
-/**
- * FLV header error exception
- * @param message error message
- */
-class FlvHeaderErrorException(override val message: String) : FlvErrorException(message)
+  CHAT_MESSAGE("WebcastChatMessage"),
+  CONTROL_MESSAGE("WebcastControlMessage");
 
-/**
- * FLV tag header error exception
- * @param message error message
- */
-class FlvTagHeaderErrorException(override val message: String) : FlvErrorException(message)
+  companion object {
+    fun fromClassName(className: String): DouyinWebcastMessages? {
+      return DouyinWebcastMessages.entries.firstOrNull { it.className == className }
+    }
+  }
+}

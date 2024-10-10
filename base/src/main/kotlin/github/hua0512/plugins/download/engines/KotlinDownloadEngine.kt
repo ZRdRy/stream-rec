@@ -24,6 +24,8 @@
  * SOFTWARE.
  */
 
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
 package github.hua0512.plugins.download.engines
 
 import github.hua0512.app.HttpClientFactory
@@ -35,6 +37,7 @@ import github.hua0512.download.OnDownloadStarted
 import github.hua0512.download.exceptions.FatalDownloadErrorException
 import github.hua0512.flv.FlvMetaInfoProvider
 import github.hua0512.flv.data.FlvData
+import github.hua0512.flv.exceptions.FlvHeaderErrorException
 import github.hua0512.flv.operators.analyze
 import github.hua0512.flv.operators.dump
 import github.hua0512.flv.operators.process
@@ -51,17 +54,22 @@ import io.ktor.client.HttpClient
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.Clock
 import kotlinx.serialization.json.Json
 import java.net.SocketTimeoutException
 import java.nio.file.Path
+import java.util.concurrent.CancellationException
 import kotlin.io.path.Path
 import kotlin.io.path.fileSize
 import kotlin.io.path.nameWithoutExtension
@@ -92,22 +100,25 @@ class KotlinDownloadEngine : BaseDownloadEngine() {
   /**
    * Meta info provider
    */
-  private val metaInfoProvider = FlvMetaInfoProvider()
-
+  private val metaInfoProvider by lazy { FlvMetaInfoProvider() }
 
   /**
    * Whether to enable flv fix
    */
   internal var enableFlvFix = false
 
+  internal var enableFlvDuplicateTagFiltering = true
+
   /**
    * Whether to combine ts files
    */
   internal var combineTsFiles = false
 
-
   // last downloaded segment time
   private var lastDownloadedTime = 0L
+
+  // last downloaded file path
+  private var lastDownloadFilePath: String = ""
 
   override suspend fun start() = coroutineScope {
     val client = HttpClientFactory().getClient(
@@ -140,13 +151,15 @@ class KotlinDownloadEngine : BaseDownloadEngine() {
           downloadStartCallback(it, time.epochSeconds)
       }.run {
         // use parent folder for m3u8 with combining files disabled
-        if (!isFlv && !combineTsFiles) {
+        lastDownloadFilePath = if (!isFlv && !combineTsFiles) {
           Path(this).parent.pathString
         } else if (isFlv) {
           // force flv file extension
           val path = Path(this)
           path.resolveSibling("${path.nameWithoutExtension}.flv").pathString
-        } else this
+        } else
+          this
+        lastDownloadFilePath
       }
     }
 
@@ -195,6 +208,7 @@ class KotlinDownloadEngine : BaseDownloadEngine() {
     sizedUpdater: DownloadProgressUpdater,
     streamerContext: StreamerContext,
   ) {
+    var exception: Throwable? = null
     client.prepareGet(downloadUrl!!) {
       this@KotlinDownloadEngine.headers.forEach { header(it.key, it.value) }
       cookies?.let { header(HttpHeaders.Cookie, it) }
@@ -203,11 +217,12 @@ class KotlinDownloadEngine : BaseDownloadEngine() {
       if (enableFlvFix) {
         channel
           .asStreamFlow(context = streamerContext)
+          .catch {
+            exception = it
+          }
           .onEach { producer.send(it) }
           .flowOn(Dispatchers.IO)
-          .catch {
-            mainLogger.error("${streamerContext.name} download flow failed: $it")
-          }.collect()
+          .collect()
       } else {
         val outputPath = pathProvider(0)
         val file = Path.of(outputPath).toFile()
@@ -216,7 +231,17 @@ class KotlinDownloadEngine : BaseDownloadEngine() {
         }
       }
     }
-    producer.close()
+    mainLogger.debug("${streamerContext.name} flv download completed, exception: $exception")
+    if (exception is FlvHeaderErrorException) {
+      if (producer.isEmpty) {
+        producer.close(exception)
+        onDownloadError(lastDownloadFilePath, exception as Exception)
+        throw exception!!
+      }
+    } else if (exception is CancellationException || exception is kotlinx.coroutines.CancellationException) {
+      exception = null
+    }
+    producer.close(exception)
   }
 
   private suspend fun handleHlsDownload(client: HttpClient, streamerContext: StreamerContext) {
@@ -238,7 +263,7 @@ class KotlinDownloadEngine : BaseDownloadEngine() {
     sizedUpdater: DownloadProgressUpdater,
   ) {
     producer.receiveAsFlow()
-      .process(limitsProvider, context)
+      .process(limitsProvider, context, enableFlvDuplicateTagFiltering)
       .analyze(metaInfoProvider, context)
       .dump(pathProvider) { index, path, createdAt, openAt ->
         val metaInfo = metaInfoProvider[index] ?: run {
@@ -251,8 +276,17 @@ class KotlinDownloadEngine : BaseDownloadEngine() {
       .flowOn(Dispatchers.IO)
       .stats(sizedUpdater)
       .flowOn(Dispatchers.Default)
-      .onCompletion {
-        // clear meta info provider when completed
+      .onCompletion { cause ->
+        mainLogger.debug("${context.name} flv process completed : {}, {}", cause, metaInfoProvider.size)
+        // nothing is downloaded
+        if (metaInfoProvider.size == 0 && cause != null) {
+          // clear meta info provider when completed
+          metaInfoProvider.clear()
+          onDownloadError(lastDownloadFilePath, cause as Exception)
+          throw cause
+          return@onCompletion
+        }
+        // case when download is completed with more than 0 segments is downloaded
         metaInfoProvider.clear()
       }
       .collect()
@@ -284,17 +318,25 @@ class KotlinDownloadEngine : BaseDownloadEngine() {
       .collect()
   }
 
+  @OptIn(DelicateCoroutinesApi::class)
   override suspend fun stop(exception: Exception?): Boolean {
-    if (this::downloadJob.isInitialized) {
-      downloadJob.cancelAndJoin()
-      if (this::producer.isInitialized) {
-        producer.close()
+    if (!this::downloadJob.isInitialized) return false
+    downloadJob.cancelAndJoin()
+    listOfNotNull(
+      if (this::producer.isInitialized) producer else null,
+      if (this::hlsProducer.isInitialized) hlsProducer else null
+    ).forEach { channel ->
+      channel.close()
+      val result = withTimeoutOrNull(10000) {
+        while (!channel.isClosedForReceive) {
+          delay(1000)
+        }
       }
-      if (this::hlsProducer.isInitialized) {
-        hlsProducer.close()
+      if (result == null) {
+        mainLogger.warn("${channel::class.simpleName} channel not closed")
+        return false
       }
-      return true
     }
-    return false
+    return true
   }
 }

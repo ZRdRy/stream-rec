@@ -24,30 +24,44 @@
  * SOFTWARE.
  */
 
-package github.hua0512.flv.exceptions
+package github.hua0512.plugins.douyin.download
 
+import github.hua0512.plugins.base.exceptions.InvalidExtractionUrlException
+import github.hua0512.plugins.douyin.download.DouyinExtractor.Companion.URL_REGEX
+import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.request.parameter
 
-/**
- * Base FLV error exception
- * @param message error message
- */
-open class FlvErrorException(override val message: String) : IllegalArgumentException(message)
-
-/**
- * FLV data error exception
+/** Utils for Douyin requests
  * @author hua0512
- * @date : 2024/6/9 10:43
+ * @date : 2024/10/6 16:40
  */
-class FlvDataErrorException(override val message: String) : FlvErrorException(message)
+
 
 /**
- * FLV header error exception
- * @param message error message
+ * Extracts the Douyin webrid from the specified URL.
+ *
+ * @param url The URL from which to extract the Douyin webrid
+ * @return The Douyin room ID, or `null` if the webrid could not be extracted
  */
-class FlvHeaderErrorException(override val message: String) : FlvErrorException(message)
+internal fun extractDouyinWebRid(url: String): String? {
+  if (url.isEmpty()) return null
+  val roomIdPattern = URL_REGEX.toRegex()
+  return roomIdPattern.find(url)?.groupValues?.get(1) ?: run {
+    throw InvalidExtractionUrlException("Failed to get douyin room id from url: $url")
+    return null
+  }
+}
 
-/**
- * FLV tag header error exception
- * @param message error message
- */
-class FlvTagHeaderErrorException(override val message: String) : FlvErrorException(message)
+internal fun HttpRequestBuilder.fillDouyinCommonParams() {
+  DouyinParams.commonParams.forEach { (t, u) ->
+    parameter(t, u)
+  }
+}
+
+internal fun MutableMap<String, String>.fillDouyinCommonParams() {
+  putAll(DouyinParams.commonParams)
+}
+
+internal fun HttpRequestBuilder.fillWebRid(webRid: String) {
+  parameter(DouyinParams.WEB_RID_KEY, webRid)
+}

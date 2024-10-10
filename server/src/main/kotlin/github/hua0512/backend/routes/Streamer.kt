@@ -47,6 +47,16 @@ fun Route.streamerRoute(repo: StreamerRepo) {
     get {
       val filter = call.request.queryParameters["filter"] ?: "all"
       when (filter) {
+        "live" -> {
+          val streamers = repo.getStreamersByLiveStatus(true)
+          call.respond(streamers)
+        }
+
+        "offline" -> {
+          val streamers = repo.getStreamersByLiveStatus(false)
+          call.respond(streamers)
+        }
+
         "active" -> {
           val streamers = repo.getStreamersActive()
           call.respond(streamers)
@@ -129,7 +139,10 @@ fun Route.streamerRoute(repo: StreamerRepo) {
       if (state != null) {
         try {
           val streamer = repo.getStreamerById(StreamerId(id)) ?: return@put call.respond(HttpStatusCode.NotFound, "Streamer not found")
-          repo.update(streamer.copy(isActivated = state))
+          // only ensure live status is same as activated status if false
+          val newStreamer = if (!state) streamer.copy(isLive = state, isActivated = state) else streamer.copy(isActivated = state, isLive = false)
+          val status = repo.update(newStreamer)
+          if (!status) return@put call.respond(HttpStatusCode.InternalServerError, "Error updating stream state")
           call.respond(HttpStatusCode.OK, buildJsonObject {
             put("msg", "Stream state updated")
             put("code", 200)
@@ -139,7 +152,7 @@ fun Route.streamerRoute(repo: StreamerRepo) {
           call.respond(HttpStatusCode.InternalServerError, "Error updating stream state: ${e.message}")
         }
       } else {
-        val streamer: Streamer = try {
+        var streamer: Streamer = try {
           call.receive<Streamer>().also { logger.debug("Received stream : {}", it) }
         } catch (e: Exception) {
           logger.error("Error receiving stream", e)
@@ -158,6 +171,12 @@ fun Route.streamerRoute(repo: StreamerRepo) {
         }
 
         try {
+          // only ensure live status is same as activated status if false
+          streamer = if (!streamer.isActivated) {
+            streamer.copy(isLive = streamer.isActivated)
+          } else {
+            streamer.copy(isLive = false)
+          }
           repo.update(streamer)
           call.respond(streamer)
         } catch (e: Exception) {

@@ -244,6 +244,7 @@ abstract class Download<out T : DownloadConfig>(val app: App, open val danmu: Da
     }
 
     var exception: Exception? = null
+    var lastFilePath = ""
 
 
     val streamerCallback = object : DownloadCallback {
@@ -274,6 +275,7 @@ abstract class Download<out T : DownloadConfig>(val app: App, open val danmu: Da
           .replace(PART_PREFIX, "")
 
         danmu.videoStartTime = Instant.fromEpochSeconds(time)
+        lastFilePath = filePath
 
         if (isDanmuEnabled) {
           danmu.filePath = danmuPath
@@ -357,7 +359,6 @@ abstract class Download<out T : DownloadConfig>(val app: App, open val danmu: Da
         )
 
         // then it means that download has failed (no file is created)
-        logger.error("${streamer.name} download failed")
         exception = e
       }
 
@@ -410,6 +411,7 @@ abstract class Download<out T : DownloadConfig>(val app: App, open val danmu: Da
 
         is KotlinDownloadEngine -> {
           enableFlvFix = app.config.enableFlvFix
+          enableFlvDuplicateTagFiltering = app.config.enableFlvDuplicateTagFiltering
           combineTsFiles = app.config.combineTsFiles
         }
       }
@@ -427,9 +429,19 @@ abstract class Download<out T : DownloadConfig>(val app: App, open val danmu: Da
           danmu.finish()
           // stop danmu job
           stopDanmuJob(it)
-          val file = Path(danmu.filePath)
-          // delete danmu as invalid download
-          file.deleteFile()
+          if (lastFilePath.isNotEmpty()) {
+            // check if the file exists
+            val path = Path(lastFilePath)
+            if (path.exists()) {
+              return@let
+            }
+          } else {
+            // delete the danmu file
+            val danmuPath = Path(danmu.filePath)
+            if (danmuPath.exists()) {
+              danmuPath.deleteFile()
+            }
+          }
         }
         throw exception
       } else {
@@ -612,7 +624,8 @@ abstract class Download<out T : DownloadConfig>(val app: App, open val danmu: Da
       danmuJob.cancel(CancellationException(Throwable("Cancel download", DownloadProcessFinishedException())))
       danmuJob.join()
     } catch (e: Exception) {
-      logger.error("(${streamer.name}) failed to cancel danmuJob: $e")
+      if (e !is CancellationException)
+        logger.error("(${streamer.name}) failed to cancel danmuJob: $e")
     } finally {
       danmu.clean()
     }
@@ -657,6 +670,14 @@ abstract class Download<out T : DownloadConfig>(val app: App, open val danmu: Da
     downloadFileFormat = finalStreamInfo.format
     downloadUrl = finalStreamInfo.url
     return true
+  }
+
+  /**
+   * Update the streamer info
+   * @param streamer the [Streamer] instance
+   */
+  open fun updateStreamer(streamer: Streamer) {
+    this.streamer = streamer
   }
 
   /**

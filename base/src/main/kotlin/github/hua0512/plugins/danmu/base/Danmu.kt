@@ -46,6 +46,7 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.io.EOFException
 import java.io.File
 import java.io.IOException
 import java.io.OutputStream
@@ -182,6 +183,11 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
   abstract fun oneHello(): ByteArray
 
   /**
+   * Callback triggered when danmu fails to connect
+   */
+  protected abstract fun onDanmuRetry(retryCount: Int)
+
+  /**
    * Fetch danmu from server using websocket
    *
    */
@@ -198,6 +204,7 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
       maxDelayMillis = 60000,
       factor = 1.5,
       onError = { e, retryCount ->
+        onDanmuRetry(retryCount)
         logger.error("Error connecting ws, $filePath, retry count: $retryCount", e)
       }
     ) {
@@ -230,9 +237,12 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
       if (isActive && !hasReceivedEnd) {
         // trigger backoff strategy
         throw IOException("$websocketUrl connection finished")
+      } else if (isActive && hasReceivedEnd) {
+        throw CancellationException("End of danmu received")
       }
     }
 
+    // wait for cancellation
     awaitCancellation()
   }
 
@@ -256,65 +266,57 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
     // receive incoming
     incoming.receiveAsFlow()
       .flatMapConcat { frame ->
-        val data = frame.data
-        flow {
-          try {
-            // decode danmu
-            for (danmu in decodeDanmu(this@processSession, data)) {
-              when (danmu) {
-                is DanmuData -> {
-                  // calculate delta time
-                  val delta = danmu.calculateDelta()
-                  // emit danmu to write to file
-                  emit(ClientDanmuData(danmu, videoStartTime, delta))
-                }
-
-                is EndOfDanmu -> {
-                  logger.info("$filePath End of danmu received")
-                  hasReceivedEnd = true
-                  close()
-                }
-
-                else -> logger.error("Unsupported danmu data: {}", danmu)
-              }
-            }
-          } catch (e: Exception) {
-            if (e !is CancellationException) {
-              logger.error("Error decoding danmu", e)
-            }
-          }
-        }
+        decodeDanmu(frame.data)
       }
       .flowOn(Dispatchers.Default)
       .buffer()
       .onEach {
         addToBuffer(it)
       }
+      .catch {
+        if (!(it is EOFException && hasReceivedEnd)) throw it
+      }
       .onCompletion {
         it ?: return@onCompletion
         // write end section only when download is aborted or cancelled
         if (it.cause !is DownloadProcessFinishedException) {
           logger.error("$filePath danmu completed: $it")
-          val file = File(filePath)
-          if (file.exists()) {
-            try {
-              // ensure remaining danmu is written
-              writeRemainingDanmu()
-              with(fos) {
-                flush()
-                writeEndXml()
-              }
-            } catch (e: Exception) {
-              logger.error("$filePath Error writing remaining danmu", e)
-            } finally {
-              enableWrite = false
-              fos.close()
-            }
+          if (File(filePath).exists()) {
+            writeFinalToFos()
           }
         }
       }
       .flowOn(Dispatchers.IO)
       .collect()
+  }
+
+
+  private fun WebSocketSession.decodeDanmu(data: ByteArray): Flow<ClientDanmuData> = flow {
+    try {
+      // decode danmu
+      for (danmu in decodeDanmu(this@decodeDanmu, data)) {
+        when (danmu) {
+          is DanmuData -> {
+            // calculate delta time
+            val delta = danmu.calculateDelta()
+            // emit danmu to write to file
+            emit(ClientDanmuData(danmu, videoStartTime, delta))
+          }
+
+          is EndOfDanmu -> {
+            logger.info("$filePath End of danmu received")
+            hasReceivedEnd = true
+            close()
+          }
+
+          else -> logger.error("Unsupported danmu data: {}", danmu)
+        }
+      }
+    } catch (e: Exception) {
+      if (e !is CancellationException) {
+        logger.error("Error decoding danmu", e)
+      }
+    }
   }
 
 
@@ -415,16 +417,26 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
   fun finish() {
     val exists = File(filePath).exists()
     if (!exists) return
+    writeFinalToFos()
+  }
+
+
+  private fun writeFinalToFos() {
+    if (!enableWrite) return
     writeLock.withLock {
-      // ensure remaining danmu is written
-      writeRemainingDanmu()
-      fos.flush()
-      enableWrite = false
-      fos.writeEndXml()
       try {
-        fos.close()
+        writeRemainingDanmu()
+        fos.writeEndXml()
+        fos.flush()
       } catch (e: Exception) {
-        // ignore
+        logger.error("$filePath Error writing final danmu", e)
+      } finally {
+        enableWrite = false
+        try {
+          fos.close()
+        } catch (e: Exception) {
+          logger.error("$filePath Error closing fos", e)
+        }
       }
     }
   }
@@ -444,7 +456,7 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
   /**
    * Clean up danmu resources
    */
-  fun clean() {
+  open fun clean() {
     enableWrite = false
     hasReceivedEnd = false
     // reset replay cache
