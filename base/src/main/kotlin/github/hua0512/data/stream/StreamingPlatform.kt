@@ -36,6 +36,7 @@ enum class StreamingPlatform(val id: Int) {
   DOUYU(2),
   TWITCH(3),
   PANDATV(4),
+  WEIBO(5),
   UNKNOWN(Int.MAX_VALUE);
 
 

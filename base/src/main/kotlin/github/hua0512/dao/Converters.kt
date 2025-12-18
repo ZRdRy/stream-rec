@@ -28,12 +28,14 @@ package github.hua0512.dao
 
 import androidx.room.TypeConverter
 import github.hua0512.data.config.*
+import github.hua0512.data.config.engine.DownloadEngines
+import github.hua0512.data.config.engine.EngineConfig
 import github.hua0512.data.media.VideoFormat
+import github.hua0512.data.stream.StreamerState
 import github.hua0512.data.stream.StreamingPlatform
 import github.hua0512.data.upload.UploadConfig
 import github.hua0512.data.upload.UploadPlatform
 import github.hua0512.data.upload.UploadState
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
@@ -50,6 +52,12 @@ class Converters {
       encodeDefaults = false
     }
   }
+
+  @TypeConverter
+  fun fromStreamerState(value: Int?): StreamerState? = value?.let { StreamerState.valueOf(it) }
+
+  @TypeConverter
+  fun toStreamerState(value: StreamerState): Int? = value.value
 
   @TypeConverter
   fun fromVideoFormat(value: String?): VideoFormat? {
@@ -113,6 +121,16 @@ class Converters {
   }
 
   @TypeConverter
+  fun fromWeiboGlobalConfig(value: String?): WeiboConfigGlobal? {
+    return value?.let { json.decodeFromString(it) }
+  }
+
+  @TypeConverter
+  fun toWeiboGlobalConfig(value: WeiboConfigGlobal?): String? {
+    return value?.let { json.encodeToString(it) }
+  }
+
+  @TypeConverter
   fun fromDownloadConfig(value: String?): DownloadConfig? {
     return value?.let { json.decodeFromString(it) }
   }
@@ -161,4 +179,25 @@ class Converters {
   fun toUploadState(value: UploadState?): Int? {
     return value?.value
   }
+
+  @TypeConverter
+  fun fromDownloadEngineConfig(value: String?): EngineConfig? {
+    return value?.let { json.decodeFromString<EngineConfig>(it) }
+  }
+
+  @TypeConverter
+  fun toDownloadEngineConfig(value: EngineConfig?): String? {
+    return value?.let { json.encodeToString(it) }
+  }
+
+  @TypeConverter
+  fun fromDownloadEngine(value: String?): DownloadEngines? {
+    return value?.let { DownloadEngines.fromString(it) }
+  }
+
+  @TypeConverter
+  fun toDownloadEngine(value: DownloadEngines?): String? {
+    return value?.engine
+  }
+
 }

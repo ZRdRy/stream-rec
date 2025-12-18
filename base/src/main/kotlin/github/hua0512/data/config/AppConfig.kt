@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -52,15 +52,13 @@ data class AppConfig(
   val maxConcurrentDownloads: Int = 5,
   val maxConcurrentUploads: Int = 3,
   val deleteFilesAfterUpload: Boolean = false,
-  val useBuiltInSegmenter: Boolean = false,
-  val exitDownloadOnError: Boolean = false,
-  val enableFlvFix: Boolean = false,
-  val combineTsFiles: Boolean = false,
   val huyaConfig: HuyaConfigGlobal = HuyaConfigGlobal(),
   val douyinConfig: DouyinConfigGlobal = DouyinConfigGlobal(),
   val douyuConfig: DouyuConfigGlobal = DouyuConfigGlobal(),
   val twitchConfig: TwitchConfigGlobal = TwitchConfigGlobal(),
   val pandaTvConfig: PandaTvConfigGlobal = PandaTvConfigGlobal(),
+  val weiboConfig: WeiboConfigGlobal = WeiboConfigGlobal(),
+  val tlsVerification: Boolean = true,
 ) {
 
   constructor(entity: AppConfigEntity) : this(
@@ -79,15 +77,13 @@ data class AppConfig(
     entity.maxConcurrentDownloads,
     entity.maxConcurrentUploads,
     entity.deleteFilesAfterUpload,
-    entity.useBuiltInSegmenter,
-    entity.exitDownloadOnError,
-    entity.enableFlvFix,
-    entity.combineTsFiles,
     entity.huyaConfig,
     entity.douyinConfig,
     entity.douyuConfig,
     entity.twitchConfig,
     entity.pandaTvConfig,
+    entity.weiboConfig,
+    entity.tlsVerification,
   )
 
 
@@ -107,14 +103,12 @@ data class AppConfig(
     maxConcurrentDownloads,
     maxConcurrentUploads,
     deleteFilesAfterUpload,
-    useBuiltInSegmenter,
-    exitDownloadOnError,
-    enableFlvFix,
-    combineTsFiles,
     huyaConfig,
     douyinConfig,
     douyuConfig,
     twitchConfig,
     pandaTvConfig,
+    weiboConfig,
+    tlsVerification,
   )
 }

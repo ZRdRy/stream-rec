@@ -31,6 +31,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.InvocationKind
+import kotlin.contracts.contract
+import kotlin.coroutines.CoroutineContext
 
 /**
  * This function is a helper function to run a block of code in IO context.
@@ -38,8 +42,18 @@ import java.io.IOException
  * @param block The block of code to be executed in IO context.
  * @return The result of the block execution.
  */
-suspend fun <T> withIOContext(block: suspend CoroutineScope.() -> T): T = withContext(Dispatchers.IO) {
-  block()
+@OptIn(ExperimentalContracts::class)
+suspend fun <T> withIOContext(context: CoroutineContext? = null, block: suspend CoroutineScope.() -> T): T {
+
+  contract {
+    callsInPlace(block, InvocationKind.EXACTLY_ONCE)
+  }
+
+  val context = if (context != null) Dispatchers.IO + context else Dispatchers.IO
+
+  return withContext(context) {
+    block()
+  }
 }
 
 /**
@@ -56,51 +70,34 @@ suspend fun <T> withIOContext(block: suspend CoroutineScope.() -> T): T = withCo
  * @throws IOException If the maximum number of retries is reached and the block still fails.
  * @throws IllegalStateException If the function somehow reaches an unreachable statement.
  */
-suspend fun <T> withIORetry(
+suspend inline fun <T> withIORetry(
   maxRetries: Int = 3,
   initialDelayMillis: Long = 1000,
   maxDelayMillis: Long = 5000,
   factor: Double = 2.0,
-  onError: (suspend (e: IOException, retryCount: Int) -> Unit)? = null,
+  onError: ((e: Exception, retryCount: Int) -> Unit) = { _, _ -> },
   block: suspend () -> T,
-): T {
-  var currentDelay = initialDelayMillis
-  repeat(maxRetries) { retryCount ->
-    try {
-      return block()
-    } catch (e: IOException) {
-      onError?.invoke(e, retryCount)
-      if (retryCount == maxRetries - 1) {
-        // If we've reached the maximum retries, propagate the exception
-        throw e
-      }
-    }
-    delay(currentDelay)
-    currentDelay = (currentDelay * factor).toLong().coerceAtMost(maxDelayMillis)
-  }
-  // This should not be reached
-  throw IllegalStateException("Unreachable statement")
-}
+): T = withRetry<IOException, T>(maxRetries, initialDelayMillis, maxDelayMillis, factor, onError, block)
 
 
-suspend fun <T> withRetry(
+suspend inline fun <reified T : Exception, U> withRetry(
   maxRetries: Int = 3,
   initialDelayMillis: Long = 1000,
   maxDelayMillis: Long = 5000,
   factor: Double = 2.0,
-  onError: (suspend (e: Exception, retryCount: Int) -> Unit)? = null,
-  block: suspend () -> T,
-): T {
+  onError: ((e: Exception, retryCount: Int) -> Unit),
+  block: suspend () -> U,
+): U {
   var currentDelay = initialDelayMillis
   repeat(maxRetries) { retryCount ->
     try {
       return block()
     } catch (e: Exception) {
-      onError?.invoke(e, retryCount)
-      if (retryCount == maxRetries - 1) {
+      if (e !is T || retryCount == maxRetries - 1) {
         // If we've reached the maximum retries, propagate the exception
         throw e
       }
+      onError(e, retryCount)
     }
     delay(currentDelay)
     currentDelay = (currentDelay * factor).toLong().coerceAtMost(maxDelayMillis)

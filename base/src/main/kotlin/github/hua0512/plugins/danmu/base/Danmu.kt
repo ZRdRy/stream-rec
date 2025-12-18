@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,7 +34,10 @@ import github.hua0512.data.media.DanmuDataWrapper
 import github.hua0512.data.media.DanmuDataWrapper.DanmuData
 import github.hua0512.data.media.DanmuDataWrapper.EndOfDanmu
 import github.hua0512.data.stream.Streamer
+import github.hua0512.plugins.danmu.base.Danmu.Companion.XML_END
+import github.hua0512.plugins.danmu.base.Danmu.Companion.XML_START
 import github.hua0512.plugins.danmu.exceptions.DownloadProcessFinishedException
+import github.hua0512.plugins.danmu.exceptions.EndDanmuException
 import github.hua0512.utils.withIORetry
 import io.ktor.client.plugins.websocket.*
 import io.ktor.client.request.*
@@ -42,16 +45,18 @@ import io.ktor.http.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.io.EOFException
 import java.io.File
 import java.io.IOException
 import java.io.OutputStream
+import java.net.SocketException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import kotlin.time.Clock
 
 /**
  * Danmu (Bullet screen comments) downloader base class
@@ -77,6 +82,21 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
     private const val XML_END = "</i>"
 
     private const val BUFFER_SIZE = 20
+
+    /**
+     * Regex to match invalid XML characters
+     *
+     * This regex matches:
+     * 1. Orphaned UTF-16 surrogate pairs:
+     *    - High surrogates (U+D800 to U+DBFF) not followed by low surrogates
+     *    - Low surrogates (U+DC00 to U+DFFF) not preceded by high surrogates
+     * 2. Control characters and other Unicode code points not allowed in XML 1.0:
+     *    - C0 controls (U+0000 to U+0008, U+000B, U+000C, U+000E to U+001F)
+     *    - C1 controls (U+007F to U+009F)
+     *    - Byte Order Mark (U+FEFF), Unicode non-characters (U+FFFE, U+FFFF)
+     */
+    private val invalidXMLChars =
+      Regex("(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\uFEFF\uFFFE\uFFFF]")
   }
 
   /**
@@ -158,6 +178,11 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
   private var hasReceivedEnd = false
 
   /**
+   * Callback triggered when danmu is closed
+   */
+  private var onDanmuClosedCallback: (() -> Unit)? = null
+
+  /**
    * Initialize danmu
    *
    * @param streamer streamer
@@ -182,6 +207,11 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
   abstract fun oneHello(): ByteArray
 
   /**
+   * Callback triggered when danmu fails to connect
+   */
+  protected abstract fun onDanmuRetry(retryCount: Int)
+
+  /**
    * Fetch danmu from server using websocket
    *
    */
@@ -192,36 +222,46 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
     }
 
     // start Websocket with backoff strategy
+    val wsUrl = websocketUrl
     withIORetry(
       maxRetries = 10,
-      initialDelayMillis = 10000,
+      initialDelayMillis = 1000,
       maxDelayMillis = 60000,
-      factor = 1.5,
+      factor = 2.0,
       onError = { e, retryCount ->
+        onDanmuRetry(retryCount)
         logger.error("Error connecting ws, $filePath, retry count: $retryCount", e)
       }
     ) {
-      logger.debug("Connecting to danmu server: $websocketUrl")
+      logger.debug("Connecting to danmu server: $wsUrl")
       // determine if ping is enabled
       if (enablePing) {
-        app.client.webSocket(websocketUrl, request = {
+        app.client.webSocket(wsUrl, request = {
           fillRequest()
         }) {
           pingIntervalMillis = heartBeatDelay
           processSession()
         }
       } else {
-        val urlBuilder = URLBuilder(websocketUrl)
+        val urlBuilder = URLBuilder(wsUrl)
         if (urlBuilder.protocol.isSecure()) {
-          app.client.wss(host = urlBuilder.host, port = urlBuilder.port, path = urlBuilder.encodedPath, request = {
-            fillRequest()
-          }) {
+          app.client.wss(
+            host = urlBuilder.host,
+            port = urlBuilder.port,
+            path = urlBuilder.encodedPath,
+            request = {
+              fillRequest()
+            }) {
             processSession()
           }
         } else {
-          app.client.ws(host = urlBuilder.host, port = urlBuilder.port, path = urlBuilder.encodedPath, request = {
-            fillRequest()
-          }) {
+          app.client.ws(
+            host = urlBuilder.host,
+            port = urlBuilder.port,
+            path = urlBuilder.encodedPath,
+            request = {
+              fillRequest()
+            }) {
             processSession()
           }
         }
@@ -229,10 +269,13 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
       // check if coroutine is cancelled
       if (isActive && !hasReceivedEnd) {
         // trigger backoff strategy
-        throw IOException("$websocketUrl connection finished")
+        throw IOException("$wsUrl connection finished")
+      } else if (isActive && hasReceivedEnd) {
+        throw EndDanmuException()
       }
     }
 
+    // wait for cancellation
     awaitCancellation()
   }
 
@@ -256,65 +299,64 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
     // receive incoming
     incoming.receiveAsFlow()
       .flatMapConcat { frame ->
-        val data = frame.data
-        flow {
-          try {
-            // decode danmu
-            for (danmu in decodeDanmu(this@processSession, data)) {
-              when (danmu) {
-                is DanmuData -> {
-                  // calculate delta time
-                  val delta = danmu.calculateDelta()
-                  // emit danmu to write to file
-                  emit(ClientDanmuData(danmu, videoStartTime, delta))
-                }
-
-                is EndOfDanmu -> {
-                  logger.info("$filePath End of danmu received")
-                  hasReceivedEnd = true
-                  close()
-                }
-
-                else -> logger.error("Unsupported danmu data: {}", danmu)
-              }
-            }
-          } catch (e: Exception) {
-            if (e !is CancellationException) {
-              logger.error("Error decoding danmu", e)
-            }
-          }
-        }
+        decodeDanmu(frame.data)
       }
       .flowOn(Dispatchers.Default)
       .buffer()
       .onEach {
+        logger.trace("{}", it)
         addToBuffer(it)
+      }
+      .catch {
+        if (hasReceivedEnd) throw EndDanmuException()
+        else if (it is SocketException) return@catch
+        else if (it is EOFException) return@catch
+        else logger.error("$filePath danmu error", it)
       }
       .onCompletion {
         it ?: return@onCompletion
         // write end section only when download is aborted or cancelled
-        if (it.cause !is DownloadProcessFinishedException) {
-          logger.error("$filePath danmu completed: $it")
-          val file = File(filePath)
-          if (file.exists()) {
-            try {
-              // ensure remaining danmu is written
-              writeRemainingDanmu()
-              with(fos) {
-                flush()
-                writeEndXml()
-              }
-            } catch (e: Exception) {
-              logger.error("$filePath Error writing remaining danmu", e)
-            } finally {
-              enableWrite = false
-              fos.close()
-            }
+        if (it !is DownloadProcessFinishedException) {
+          if (it !is EndDanmuException) {
+            logger.error("$filePath danmu completed: $it")
+          }
+          if (File(filePath).exists()) {
+            writeFinalToFos()
           }
         }
       }
       .flowOn(Dispatchers.IO)
       .collect()
+  }
+
+
+  private fun WebSocketSession.decodeDanmu(data: ByteArray): Flow<ClientDanmuData> = flow {
+    try {
+      // decode danmu
+      for (danmu in decodeDanmu(this@decodeDanmu, data)) {
+        when (danmu) {
+          is DanmuData -> {
+            // calculate delta time
+            val delta = danmu.calculateDelta()
+            // emit danmu to write to file
+            emit(ClientDanmuData(danmu, videoStartTime, delta))
+          }
+
+          is EndOfDanmu -> {
+            logger.info("$filePath End of danmu received")
+            hasReceivedEnd = true
+            onDanmuClosedCallback?.invoke()
+            close()
+          }
+
+          else -> logger.error("Unsupported danmu data: {}", danmu)
+        }
+      }
+    } catch (e: Exception) {
+      if (e !is CancellationException) {
+        logger.error("Error decoding danmu", e)
+      }
+    }
   }
 
 
@@ -355,8 +397,8 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
         val danmu = data.danmu as DanmuData
         val time = data.clientTime
         val color = if (danmu.color == -1) "16777215" else danmu.color
-        val content = danmu.content.replaceToXmlFriendly()
-        val sender = danmu.sender.replaceToXmlFriendly()
+        val content = danmu.content.sanitizeToXmlString()
+        val sender = danmu.sender.sanitizeToXmlString()
         // append tab
         append("\t")
         // append danmu content
@@ -370,17 +412,25 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
   }
 
   /**
-   * Replaces special characters in the given string with their XML-friendly counterparts.
-   * @receiver String the string to be replaced
-   * @return String the XML-friendly string
+   * Removes invalid characters from the given string.
+   * @receiver String the string to be cleaned
+   * @return String the cleaned string
    */
-  private fun String.replaceToXmlFriendly(): String = this.replace("&", "&amp;")
-    .replace("<", "&lt;")
-    .replace(">", "&gt;")
-    .replace("\"", "&quot;")
-    .replace("'", "&apos;")
-    .replace("\n", "&#10;")
-    .replace("\r", "&#13;")
+  private fun String.sanitizeToXmlString(): String {
+    val cleaned = this.replace(invalidXMLChars, "")
+    return buildString {
+      for (char in cleaned) {
+        when (char) {
+          '&' -> append("&amp;")
+          '<' -> append("&lt;")
+          '>' -> append("&gt;")
+          '"' -> append("&quot;")
+          '\'' -> append("&apos;")
+          else -> append(char)
+        }
+      }
+    }
+  }
 
   /**
    * Launches a coroutine to send heartbeats on the given WebSocket session.
@@ -392,7 +442,7 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
         while (isActive) {
           // send heart beat with delay
           send(heartBeatPack)
-          logger.trace("{} heart beat sent {}", websocketUrl, heartBeatPack)
+          logger.trace("{} heart beat sent {}", websocketUrl, heartBeatPack.decodeToString())
           delay(heartBeatDelay)
         }
       }
@@ -415,16 +465,26 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
   fun finish() {
     val exists = File(filePath).exists()
     if (!exists) return
+    writeFinalToFos()
+  }
+
+
+  private fun writeFinalToFos() {
+    if (!enableWrite) return
     writeLock.withLock {
-      // ensure remaining danmu is written
-      writeRemainingDanmu()
-      fos.flush()
-      enableWrite = false
-      fos.writeEndXml()
       try {
-        fos.close()
+        writeRemainingDanmu()
+        fos.writeEndXml()
+        fos.flush()
       } catch (e: Exception) {
-        // ignore
+        logger.error("$filePath Error writing final danmu", e)
+      } finally {
+        enableWrite = false
+        try {
+          fos.close()
+        } catch (e: Exception) {
+          logger.error("$filePath Error closing fos", e)
+        }
       }
     }
   }
@@ -444,7 +504,7 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
   /**
    * Clean up danmu resources
    */
-  fun clean() {
+  open fun clean() {
     enableWrite = false
     hasReceivedEnd = false
     // reset replay cache
@@ -488,6 +548,11 @@ abstract class Danmu(val app: App, val enablePing: Boolean = false) {
       String.format("%.3f", time / 1000.0).toDouble()
     }
     return delta
+  }
+
+
+  fun setOnDanmuClosedCallback(callback: () -> Unit) {
+    onDanmuClosedCallback = callback
   }
 
 }

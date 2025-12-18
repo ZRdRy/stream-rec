@@ -42,16 +42,14 @@ import github.hua0512.repo.UserRepo
 import github.hua0512.utils.generateRandomString
 import github.hua0512.utils.md5
 import io.ktor.http.*
-import io.ktor.server.application.*
 import io.ktor.server.auth.authenticate
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import kotlinx.datetime.Clock
-import kotlinx.datetime.toJavaInstant
 import kotlinx.serialization.json.*
 import kotlin.time.DurationUnit
 import kotlin.time.toDuration
+import kotlin.time.toJavaInstant
 
 
 /**
@@ -89,7 +87,7 @@ fun Route.userRoute(json: Json, userRepo: UserRepo) {
         }
 
 
-        val validTo = Clock.System.now().plus(7.toDuration(DurationUnit.DAYS))
+        val validTo = kotlin.time.Clock.System.now().plus(7.toDuration(DurationUnit.DAYS))
         val token = JWT.create()
           .withAudience(jwtAudience)
           .withIssuer(jwtDomain)
@@ -104,7 +102,7 @@ fun Route.userRoute(json: Json, userRepo: UserRepo) {
           put("id", user.id)
         }
         call.respond(HttpStatusCode.OK, responseBody)
-        EventCenter.sendEvent(UserLogin(user.username, Clock.System.now()))
+        EventCenter.sendEvent(UserLogin(user.username, kotlin.time.Clock.System.now()))
       } catch (e: Exception) {
         logger.error("Failed to login", e)
         call.respond(HttpStatusCode.BadRequest, "Failed to get user")

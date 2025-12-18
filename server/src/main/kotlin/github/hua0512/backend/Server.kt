@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,8 +27,11 @@
 package github.hua0512.backend
 
 import github.hua0512.backend.plugins.*
+import github.hua0512.plugins.base.IExtractorFactory
+import github.hua0512.plugins.event.DownloadStateEventPlugin
 import github.hua0512.repo.AppConfigRepo
 import github.hua0512.repo.UserRepo
+import github.hua0512.repo.config.EngineConfigRepo
 import github.hua0512.repo.stats.SummaryStatsRepo
 import github.hua0512.repo.stream.StreamDataRepo
 import github.hua0512.repo.stream.StreamerRepo
@@ -38,36 +41,48 @@ import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.Json
+import kotlin.coroutines.CoroutineContext
 
-fun CoroutineScope.backendServer(
-  json: Json,
-  userRepo: UserRepo,
-  appConfigRepo: AppConfigRepo,
-  streamerRepo: StreamerRepo,
-  streamDataRepo: StreamDataRepo,
-  statsRepo: SummaryStatsRepo,
-  uploadRepo: UploadRepo,
-): EmbeddedServer<ApplicationEngine, NettyApplicationEngine.Configuration> {
-  return embeddedServer(
-    Netty,
-    port = 12555,
-    host = "0.0.0.0",
-    module = { module(json, userRepo, appConfigRepo, streamerRepo, streamDataRepo, statsRepo, uploadRepo) })
-}
 
-fun Application.module(
-  json: Json,
-  userRepo: UserRepo,
-  appConfigRepo: AppConfigRepo,
-  streamerRepo: StreamerRepo,
-  streamDataRepo: StreamDataRepo,
-  statsRepo: SummaryStatsRepo,
-  uploadRepo: UploadRepo,
-) {
+data class ServerConfig(
+  val port: Int = 12555,
+  val host: String = "0.0.0.0",
+  val parentContext: CoroutineContext,
+  val json: Json,
+  val userRepo: UserRepo,
+  val appConfigRepo: AppConfigRepo,
+  val streamerRepo: StreamerRepo,
+  val streamDataRepo: StreamDataRepo,
+  val statsRepo: SummaryStatsRepo,
+  val uploadRepo: UploadRepo,
+  val extractorFactory: IExtractorFactory,
+  val engineConfigRepo: EngineConfigRepo,
+  val downloadStateEventPlugin: DownloadStateEventPlugin,
+)
+
+fun CoroutineScope.backendServer(config: ServerConfig): EmbeddedServer<ApplicationEngine, NettyApplicationEngine.Configuration> = embeddedServer(
+  Netty,
+  port = config.port,
+  host = config.host,
+  parentCoroutineContext = config.parentContext,
+  module = { module(config) })
+
+
+fun Application.module(serverConfig: ServerConfig) {
   configureSecurity()
   configureHTTP()
   configureMonitoring()
   configureSerialization()
-  configureSockets(json)
-  configureRouting(json, userRepo, appConfigRepo, streamerRepo, streamDataRepo, statsRepo, uploadRepo)
+  configureSockets(serverConfig.downloadStateEventPlugin)
+  configureRouting(
+    serverConfig.json,
+    serverConfig.userRepo,
+    serverConfig.appConfigRepo,
+    serverConfig.streamerRepo,
+    serverConfig.streamDataRepo,
+    serverConfig.statsRepo,
+    serverConfig.uploadRepo,
+    serverConfig.extractorFactory,
+    serverConfig.engineConfigRepo
+  )
 }

@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,9 +34,10 @@ import github.hua0512.flv.data.FlvTag
 import github.hua0512.flv.utils.isHeader
 import github.hua0512.plugins.StreamerContext
 import github.hua0512.utils.logger
-import io.exoquery.pprint
+import io.exoquery.kmp.pprint
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.onCompletion
 
 private const val TAG = "FlvAnalyzerRule"
 
@@ -69,19 +70,33 @@ fun Flow<FlvData>.analyze(infoProvider: FlvMetaInfoProvider, context: StreamerCo
 
   // Pushes the current metadata information to the infoProvider
   fun pushMetadata() {
+    if (streamIndex < 0) {
+      return
+    }
     val metadataInfo = analyzer.makeMetaInfo()
     logger.info("${context.name} push[{}]: {}", streamIndex, pprint(metadataInfo, defaultHeight = 50))
     infoProvider[streamIndex] = metadataInfo
   }
 
   // Collects and processes each FlvData object in the flow
-  collect { value ->
+  onCompletion {
+    logger.debug("${context.name} completed analysis : {}", streamIndex, it)
+    // Push the final metadata information and reset the analyzer
+    pushMetadata()
+    reset()
+    streamIndex = -1
+  }.collect { value ->
     if (value.isHeader()) {
-      streamIndex++
-      if (streamIndex > 0) {
+      if (streamIndex == -1) {
+        // do nothing
+        logger.debug("${context.name} first header initialized")
+      } else {
+        // Push the metadata information and reset the analyzer
         pushMetadata()
+        reset()
       }
-      reset()
+      // Increment the stream index
+      streamIndex++
       // Analyze the header
       analyzer.analyzeHeader(value as FlvHeader)
     } else {
@@ -91,8 +106,4 @@ fun Flow<FlvData>.analyze(infoProvider: FlvMetaInfoProvider, context: StreamerCo
     // Emit the value
     emit(value)
   }
-
-  // Push the final metadata information and reset the analyzer
-  pushMetadata()
-  reset()
 }

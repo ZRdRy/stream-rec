@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,24 +26,27 @@
 
 package github.hua0512.services
 
+import androidx.sqlite.SQLiteException
 import github.hua0512.app.App
+import github.hua0512.data.StreamerId
 import github.hua0512.data.stream.StreamData
 import github.hua0512.data.stream.Streamer
+import github.hua0512.data.stream.StreamerState
 import github.hua0512.data.stream.StreamingPlatform
 import github.hua0512.flv.FlvMetaInfoProcessor
 import github.hua0512.flv.data.other.FlvMetadataInfo
-import github.hua0512.plugins.download.DownloadPlatformService
 import github.hua0512.plugins.download.base.StreamerCallback
-import github.hua0512.plugins.download.platformConfig
+import github.hua0512.plugins.download.globalConfig
+import github.hua0512.repo.config.EngineConfigManager
 import github.hua0512.repo.stream.StreamDataRepo
 import github.hua0512.repo.stream.StreamerRepo
 import github.hua0512.utils.deleteFile
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.cancel
+import github.hua0512.utils.withIOContext
+import github.hua0512.utils.withRetry
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -58,6 +61,7 @@ class DownloadService(
   private val actionService: ActionService,
   private val repo: StreamerRepo,
   private val streamDataRepository: StreamDataRepo,
+  private val downloadEngineConfigManager: EngineConfigManager,
 ) {
 
   companion object {
@@ -73,7 +77,7 @@ class DownloadService(
 
   private lateinit var callback: StreamerCallback
 
-  private var streamers = emptyList<Streamer>()
+  private lateinit var streamers: List<Streamer>
 
   private lateinit var scope: CoroutineScope
 
@@ -84,37 +88,64 @@ class DownloadService(
     downloadSemaphore = Semaphore(app.config.maxConcurrentDownloads)
     this.scope = downloadScope
     callback = object : StreamerCallback {
-      override fun onLiveStatusChanged(streamer: Streamer, isLive: Boolean) {
-        scope.launch {
-          val status = repo.update(streamer.copy(isLive = isLive))
-          logger.debug("({}) live status changed to {}, {}", streamer.name, isLive, status)
+
+      override suspend fun onStateChanged(
+        id: Long,
+        newState: StreamerState,
+        onSuccessful: () -> Unit,
+      ) = withIOContext(CoroutineName("${id}StateJob")) {
+        val streamer = repo.getStreamerById(StreamerId(id)) ?: return@withIOContext
+        if (streamer.state == newState) {
+          onSuccessful()
+          return@withIOContext
         }
+        val status = repo.update(streamer.copy(state = newState))
+        logger.debug("{} updated state -> {} = {}", streamer.name, newState, status)
+        if (status)
+          onSuccessful()
       }
 
-      override fun onLastLiveTimeChanged(streamer: Streamer, lastLiveTime: Long) {
-        scope.launch {
-          logger.debug("({}) last live time changed to {}", streamer.name, lastLiveTime)
-          repo.update(streamer.copy(lastLiveTime = lastLiveTime))
-        }
+      override suspend fun onLastLiveTimeChanged(id: Long, newLiveTime: Long, onSuccessful: () -> Unit) = withIOContext(
+        CoroutineName("${id}LastLiveTimeJob")
+      ) {
+        val streamer = repo.getStreamerById(StreamerId(id)) ?: return@withIOContext
+        if (streamer.lastLiveTime == newLiveTime) return@withIOContext
+        logger.debug("{} updated last live time -> {}", streamer.name, newLiveTime)
+        val status = repo.update(streamer.copy(lastLiveTime = newLiveTime))
+        if (status)
+          onSuccessful()
       }
 
-      override fun onDescriptionChanged(streamer: Streamer, description: String) {
-        scope.launch {
-          logger.debug("({}) description changed to {}", streamer.name, description)
-          repo.update(streamer.copy(streamTitle = description))
-        }
-      }
 
-      override fun onAvatarChanged(streamer: Streamer, avatar: String) {
-        scope.launch {
-          logger.debug("({}) avatar changed to {}", streamer.name, avatar)
-          repo.update(streamer.copy(avatar = avatar))
+      override suspend fun onDescriptionChanged(id: Long, description: String, onSuccessful: () -> Unit) =
+        withIOContext(CoroutineName("${id}DescriptionChangedJob")) {
+          val streamer = repo.getStreamerById(StreamerId(id)) ?: return@withIOContext
+          if (streamer.streamTitle == description) return@withIOContext
+          logger.debug("{} updated description -> {}", streamer.name, description)
+          val status = repo.update(streamer.copy(streamTitle = description))
+          if (status)
+            onSuccessful()
         }
-      }
 
-      override fun onStreamDownloaded(streamer: Streamer, stream: StreamData, shouldInjectMetaInfo: Boolean, metaInfo: FlvMetadataInfo?) {
+      override suspend fun onAvatarChanged(id: Long, avatar: String, onSuccessful: () -> Unit) =
+        withIOContext(CoroutineName("${id}AvatarChangedJob")) {
+          val streamer = repo.getStreamerById(StreamerId(id)) ?: return@withIOContext
+          if (streamer.avatar == avatar) return@withIOContext
+          logger.debug("{} updated avatar url -> {}", streamer.name, avatar)
+          val status = repo.update(streamer.copy(avatar = avatar))
+          if (status)
+            onSuccessful()
+        }
+
+      override fun onStreamDownloaded(
+        id: Long,
+        stream: StreamData,
+        shouldInjectMetaInfo: Boolean,
+        metaInfo: FlvMetadataInfo?,
+      ) {
         var stream = stream
-        scope.launch {
+        scope.launch(CoroutineName("${id}StreamDownloadedJob") + Dispatchers.IO) {
+          val streamer = repo.getStreamerById(StreamerId(id)) ?: return@launch
           if (shouldInjectMetaInfo) {
             if (metaInfo != null) {
               val status = FlvMetaInfoProcessor.process(stream.outputFilePath, metaInfo, true)
@@ -129,36 +160,50 @@ class DownloadService(
               logger.warn("${stream.outputFilePath} meta info not found, skip meta info processing...")
             }
           }
-          try {
-            val saved = streamDataRepository.save(stream)
-            stream.id = saved.id
-          } catch (e: Exception) {
-            logger.error("Failed to save stream data", e)
+
+          /**
+           * TODO : Investigate https://issuetracker.google.com/issues/347737870 for more information
+           */
+          val newId = withRetry<SQLiteException, Long>(onError = { e, count ->
+            // force acquire write lock
+            logger.error("{} failed to save stream data ({}), {}", streamer.name, count, e.message)
+          }) {
+            streamDataRepository.save(stream).id
           }
+          stream.id = newId
           // run post actions
           executePostPartedDownloadActions(streamer, stream)
         }
       }
 
-      override fun onStreamDownloadFailed(streamer: Streamer, stream: StreamData, e: Exception) {
+      override fun onStreamDownloadFailed(id: Long, stream: StreamData, e: Exception) {
 
       }
 
-      override fun onStreamFinished(streamer: Streamer, streams: List<StreamData>) {
-        scope.launch {
-          logger.debug("({}) stream finished", streamer.name)
+      override fun onStreamFinished(id: Long, streams: List<StreamData>) {
+        scope.launch(Dispatchers.IO + CoroutineName("${id}StreamFinishedJob")) {
+          val streamer = repo.getStreamerById(StreamerId(id)) ?: return@launch
+          if (streamer.state != StreamerState.NOT_LIVE && streamer.state != StreamerState.CANCELLED) {
+            repo.update(streamer.copy(state = StreamerState.NOT_LIVE))
+          }
+          logger.debug("{} stream finished", streamer.name)
           executeStreamFinishedActions(streamer, streams)
         }
       }
     }
 
-    val streamers = github.hua0512.utils.withIOContext {
+    val streamers = withIOContext {
       repo.getStreamersActive()
     }
     this.streamers = streamers
     streamers.groupBy { it.platform }.forEach {
       val service = getOrInitPlatformService(it.key)
-      it.value.forEach(service::addStreamer)
+      it.value.forEach { streamer ->
+        val result = service.addStreamer(streamer)
+        if (!result) {
+          logger.error("Failed to start download job for {}", streamer)
+        }
+      }
     }
     // listen to streamer changes
     scope.listenToStreamerChanges()
@@ -166,9 +211,9 @@ class DownloadService(
 
 
   private fun getOrInitPlatformService(platform: StreamingPlatform): DownloadPlatformService {
-    val fetchDelay = (platform.platformConfig(app.config).fetchDelay ?: 0).toDuration(DurationUnit.SECONDS)
+    val fetchDelay = (platform.globalConfig(app.config).fetchDelay ?: 0).toDuration(DurationUnit.SECONDS)
     val service = taskJobs.computeIfAbsent(platform) {
-      logger.info("({}) initializing...", platform)
+      logger.info("{} initializing...", platform)
       DownloadPlatformService(
         app,
         scope,
@@ -176,7 +221,8 @@ class DownloadService(
         downloadSemaphore,
         callback,
         platform,
-        PlatformDownloaderFactory
+        PlatformDownloaderFactory,
+        downloadEngineConfigManager
       )
     }
     return service
@@ -212,7 +258,7 @@ class DownloadService(
           }.forEach { streamer ->
             val platform = streamer.platform
             val streamerService = taskJobs[platform] ?: return@forEach
-            streamerService.cancelStreamer(streamer, "delete")
+            streamerService.cancelStreamer(streamer, "delete", streamer)
           }
         }
 
@@ -233,7 +279,6 @@ class DownloadService(
           // find the change reason
           if (old != new) {
             val reason = when {
-              old.isActivated != new.isActivated -> "activation"
               old.url != new.url -> "url"
               old.downloadConfig != new.downloadConfig -> "download config"
               old.platform != new.platform -> "platform"
@@ -243,13 +288,20 @@ class DownloadService(
               old.startTime != new.startTime -> "start time"
               old.endTime != new.endTime -> "end time"
               old.templateStreamer?.downloadConfig != new.templateStreamer?.downloadConfig -> "template stream download config"
+              old.engine != new.engine -> "engine"
+              old.engineConfig != new.engineConfig -> "engine config"
+              old.state != new.state -> when {
+                new.state == StreamerState.CANCELLED && old.state != StreamerState.CANCELLED -> "cancelled"
+                new.state == StreamerState.NOT_LIVE && old.state == StreamerState.CANCELLED -> "enabled"
+                else -> return@forEach
+              }
               // other changes are ignored
               else -> return@forEach
             }
-            logger.debug("Detected entity change for {}, {}", new, old)
+            logger.debug("Detected entity change({}) for {}\n{}", reason, old, new)
             val platform = old.platform
             val service = taskJobs[platform] ?: getOrInitPlatformService(platform)
-            service.cancelStreamer(old, reason)
+            service.cancelStreamer(old, reason, new)
             if (validateActivation(new)) return@forEach
             service.addStreamer(new)
           }
@@ -267,7 +319,7 @@ class DownloadService(
    * @return true if the [Streamer] is not activated, false otherwise.
    */
   private fun validateActivation(new: Streamer): Boolean {
-    if (!new.isActivated) {
+    if (new.state == StreamerState.CANCELLED) {
       logger.debug("${new.name}, ${new.url} is not activated")
       return true
     }
@@ -276,7 +328,8 @@ class DownloadService(
 
 
   private suspend fun executePostPartedDownloadActions(streamer: Streamer, streamData: StreamData) {
-    val actions = streamer.templateStreamer?.downloadConfig?.onPartedDownload ?: streamer.downloadConfig?.onPartedDownload ?: return
+    val actions =
+      streamer.templateStreamer?.downloadConfig?.onPartedDownload ?: streamer.downloadConfig?.onPartedDownload ?: return
     actionService.runActions(listOf(streamData), actions)
   }
 

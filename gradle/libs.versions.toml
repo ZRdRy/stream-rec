@@ -1,27 +1,30 @@
 [versions]
-ktor = "3.0.0-rc-2"
-ktor-test = "2.3.12"
-ksp = "2.0.20-1.0.25"
-kotlin = "2.0.20"
-kotlin-coroutines = "1.9.0"
-logback = "1.5.8"
-dagger = "2.52"
-protobuf = "4.28.2"
-androidx-room = "2.7.0-alpha09"
-androidx-sqlite = "2.5.0-alpha09"
+ktor = "3.3.3"
+ktor-test = "2.3.13"
+ksp = "2.3.3"
+kotlin = "2.2.21"
+kotlin-atomicfu = "0.29.0"
+kotlin-coroutines = "1.10.2"
+logback = "1.5.21"
+dagger = "2.57.2"
+protobuf = "4.33.1"
+androidx-room = "2.8.4"
+androidx-sqlite = "2.6.2"
 
 [libraries]
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "androidx-room" }
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "androidx-room" }
 androidx-room-paging = { group = "androidx.room", name = "room-paging", version.ref = "androidx-room" }
 androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "androidx-room" }
-androidx-sqlite = { group = "androidx.sqlite", name = "sqlite", version.ref = "androidx-sqlite" }
+androidx-sqlite = { group = "androidx.sqlite", name = "sqlite-jvm", version.ref = "androidx-sqlite" }
 androidx-sqlite-bundled = { group = "androidx.sqlite", name = "sqlite-bundled", version.ref = "androidx-sqlite" }
 androidx-sqlite-framework = { group = "androidx.sqlite", name = "sqlite-framework", version.ref = "androidx-sqlite" }
 
 at-favre-lib-bcrypt = "at.favre.lib:bcrypt:0.10.2"
 
-io-exoquery-pprint = "io.exoquery:pprint-kotlin:2.0.2"
+com-tencent-tars-core = "com.tencent.tars:tars-core:1.7.4"
+
+io-exoquery-pprint = "io.exoquery:pprint-kotlin-kmp:3.0.0"
 
 io-ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 io-ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
@@ -43,11 +46,15 @@ io-ktor-server-call-logging-jvm = { module = "io.ktor:ktor-server-call-logging-j
 io-ktor-server-call-id-jvm = { module = "io.ktor:ktor-server-call-id-jvm", version.ref = "ktor" }
 io-ktor-server-content-negotiation-jvm = { module = "io.ktor:ktor-server-content-negotiation-jvm", version.ref = "ktor" }
 io-ktor-serialization-kotlinx-json-jvm = { module = "io.ktor:ktor-serialization-kotlinx-json-jvm", version.ref = "ktor" }
+io-ktor-server-auto-head-response = { module = "io.ktor:ktor-server-auto-head-response", version.ref = "ktor" }
+io-ktor-server-partial-content = { module = "io.ktor:ktor-server-partial-content", version.ref = "ktor" }
 io-ktor-server-websockets-jvm = { module = "io.ktor:ktor-server-websockets-jvm", version.ref = "ktor" }
 io-ktor-server-netty-jvm = { module = "io.ktor:ktor-server-netty-jvm", version.ref = "ktor" }
 io-ktor-server-tests-jvm = { module = "io.ktor:ktor-server-tests-jvm", version.ref = "ktor-test" }
 
-io-lindstrom-m3u8-parser = "io.lindstrom:m3u8-parser:0.28"
+io-kotest-kotest-runner-junit5 = "io.kotest:kotest-runner-junit5:6.0.5"
+
+io-lindstrom-m3u8-parser = "io.lindstrom:m3u8-parser:0.30"
 
 ch-qos-logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 org-jetbrains-kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
@@ -58,27 +65,32 @@ com-google-protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite
 com-google-protobuf-protobuf-java-util = { module = "com.google.protobuf:protobuf-java-util", version.ref = "protobuf" }
 com-google-protobuf-protobuf-kotlin-lite = { module = "com.google.protobuf:protobuf-kotlin-lite", version.ref = "protobuf" }
 
+com-michael-bull-kotlin-result = "com.michael-bull.kotlin-result:kotlin-result:2.1.0"
 
 me-tongfei-progressbar = "me.tongfei:progressbar:0.10.1"
 
+org-jetbrains-kotlinx-atomicfu = { module = "org.jetbrains.kotlinx:atomicfu", version.ref = "kotlin-atomicfu" }
+org-jetbrains-kotlinx-io = "org.jetbrains.kotlinx:kotlinx-io-core:0.8.2"
 org-jetbrains-kotlinx-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
-org-jetbrains-kotlinx-datetime = "org.jetbrains.kotlinx:kotlinx-datetime:0.6.1"
+org-jetbrains-kotlinx-datetime = "org.jetbrains.kotlinx:kotlinx-datetime:0.7.1"
 org-jetbrains-kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlin-coroutines" }
 org-jetbrains-kotlinx-coroutines-debug = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-debug", version.ref = "kotlin-coroutines" }
 org-jetbrains-kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlin-coroutines" }
-org-jetbrains-kotlinx-serialization-json = "org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3"
-org-jetbrains-kotlinx-serialization-protobuf = "org.jetbrains.kotlinx:kotlinx-serialization-protobuf:1.7.3"
-org-openjdk-nashorn-nashorn-core = "org.openjdk.nashorn:nashorn-core:15.4"
+org-jetbrains-kotlinx-serialization-json = "org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0"
+org-jetbrains-kotlinx-serialization-core = "org.jetbrains.kotlinx:kotlinx-serialization-core:1.9.0"
+org-jetbrains-kotlinx-serialization-protobuf = "org.jetbrains.kotlinx:kotlinx-serialization-protobuf:1.9.0"
+org-openjdk-nashorn-nashorn-core = "org.openjdk.nashorn:nashorn-core:15.7"
 
-org-junit-jupiter-junit-jupiter = "org.junit.jupiter:junit-jupiter:5.11.2"
+org-junit-jupiter-junit-jupiter = "org.junit.jupiter:junit-jupiter:6.0.1"
 
-org-mockito-mockito-core = "org.mockito:mockito-core:5.14.1"
+org-mockito-mockito-core = "org.mockito:mockito-core:5.20.0"
 
 [plugins]
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 room = { id = "androidx.room", version.ref = "androidx-room" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kotlin-atomicfu = { id = "org.jetbrains.kotlinx.atomicfu", version.ref = "kotlin-atomicfu" }
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
 
 [bundles]
@@ -88,5 +100,6 @@ test-jvm = [
     "org-jetbrains-kotlinx-coroutines-debug",
     "org-jetbrains-kotlinx-coroutines-test",
     "org-mockito-mockito-core",
-    "org-junit-jupiter-junit-jupiter"
+    "org-junit-jupiter-junit-jupiter",
+    "io-kotest-kotest-runner-junit5",
 ]

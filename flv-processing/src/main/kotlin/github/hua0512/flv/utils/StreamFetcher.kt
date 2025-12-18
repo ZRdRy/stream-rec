@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,17 +26,17 @@
 
 package github.hua0512.flv.utils
 
-import github.hua0512.flv.FlvReader
+import github.hua0512.flv.FlvParser
 import github.hua0512.flv.data.FlvData
 import github.hua0512.flv.data.FlvTag
+import github.hua0512.flv.data.video.FlvVideoCodecId
+import github.hua0512.flv.data.video.VideoFourCC
 import github.hua0512.plugins.StreamerContext
-import io.ktor.client.network.sockets.SocketTimeoutException
-import io.ktor.utils.io.ByteReadChannel
-import io.ktor.utils.io.CancellationException
-import io.ktor.utils.io.jvm.javaio.toInputStream
+import io.ktor.utils.io.*
+import io.ktor.utils.io.jvm.javaio.*
+import io.ktor.utils.io.streams.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import java.io.EOFException
 
 
 /**
@@ -51,44 +51,50 @@ import java.io.EOFException
 fun ByteReadChannel.asStreamFlow(closeSource: Boolean = true, context: StreamerContext): Flow<FlvData> = flow {
   val ins = this@asStreamFlow.toInputStream()
 
-  val flvReader = FlvReader(ins)
+  val flvReader = FlvParser(ins.asInput())
   var tag: FlvData? = null
+
+  var codecId: FlvVideoCodecId? = null
+  var videoFourCC: VideoFourCC? = null
 
   with(flvReader) {
     try {
       readHeader(::emit)
-      readTags {
+      readTags(disableLogging = true) {
         tag = it
+        if ((it as FlvTag).isVideoTag()) {
+          codecId = (it.data as VideoData).codecId
+          videoFourCC = it.data.fourCC
+        }
         emit(it)
       }
-      FlvReader.logger.debug("${context.name} End of stream")
-    } catch (_: EOFException) {
-      // thrown when malformed FLV data is encountered
-      // close read and emit end of sequence tag
-    } catch (_: SocketTimeoutException) {
-      // thrown when the connection is closed
-      // close read and emit end of sequence tag
+      FlvParser.logger.debug("${context.name} End of stream")
     } catch (e: Exception) {
       // log other exceptions
       if (e !is CancellationException) {
         e.printStackTrace()
-        FlvReader.logger.error("${context.name} Exception: ${e.message}")
+        FlvParser.logger.error("${context.name} Exception: ${e.message}")
       }
+      throw e
     } finally {
-      if (closeSource) {
+      if (closeSource && isClosedForRead.not()) {
         close()
       }
       (tag as? FlvTag)?.let {
-        if (it.isAvcEndSequence()) return@let
+        if (it.isEndOfSequence()) return@let
         emit(
           createEndOfSequenceTag(
             it.num + 1,
             it.header.timestamp,
-            it.header.streamId
+            it.header.streamId,
+            codecId = codecId ?: FlvVideoCodecId.AVC,
+            fourCC = videoFourCC ?: VideoFourCC.AVC1
           )
         )
       }
       tag = null
+      codecId = null
+      videoFourCC = null
     }
   }
 }

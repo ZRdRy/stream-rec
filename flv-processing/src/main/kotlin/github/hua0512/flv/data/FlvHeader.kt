@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,7 +27,10 @@
 package github.hua0512.flv.data
 
 import github.hua0512.flv.exceptions.FlvHeaderErrorException
-import java.io.OutputStream
+import kotlinx.io.Buffer
+import kotlinx.io.Sink
+import kotlinx.io.writeString
+import kotlinx.serialization.Serializable
 
 /**
  * FLV header data class
@@ -36,18 +39,19 @@ import java.io.OutputStream
  * @property flags FLV flags, always 1 byte
  * @property headerSize FLV header size, always 4 bytes
  */
+@Serializable
 data class FlvHeader(val signature: String, val version: Int, val flags: FlvHeaderFlags, val headerSize: Int, override val crc32: Long) : FlvData {
 
   init {
-    if (signature.length != 3 || signature != "FLV") {
+    if (signature.length != 3 || signature != SIGNATURE) {
       throw FlvHeaderErrorException("Invalid FLV signature: $signature")
     }
 
-    if (version != 1) {
+    if (version != SIGNATURE_VERSION) {
       throw FlvHeaderErrorException("Invalid FLV version: $version")
     }
 
-    if (headerSize != 9) {
+    if (headerSize != HEADER_SIZE) {
       throw FlvHeaderErrorException("Invalid FLV header size: $headerSize")
     }
   }
@@ -55,17 +59,32 @@ data class FlvHeader(val signature: String, val version: Int, val flags: FlvHead
   override val size = headerSize.toLong()
 
 
-  fun write(os: OutputStream) {
-    with(os) {
+  fun write(sink: Sink) {
+    val buffer = Buffer()
+    with(buffer) {
       // write 'FLV' signature
-      write(signature.toByteArray())
-      write(version)
-      write(flags.value)
+      writeString(signature)
+      writeByte(version.toByte())
+      writeByte(flags.value.toByte())
       // write header size as Int (4 bytes)
-      write(headerSize shr 24)
-      write(headerSize shr 16)
-      write(headerSize shr 8)
-      write(headerSize)
+      writeInt(headerSize)
     }
+    buffer.transferTo(sink)
+    sink.flush()
+  }
+
+  companion object {
+
+    internal const val SIGNATURE = "FLV"
+
+    internal const val SIGNATURE_VERSION = 1
+
+    internal const val HEADER_SIZE = 9
+
+    /**
+     * Create a default FLV header
+     * @return FLV header
+     */
+    fun default() = FlvHeader(SIGNATURE, SIGNATURE_VERSION, FlvHeaderFlags(5), HEADER_SIZE, 265716093)
   }
 }

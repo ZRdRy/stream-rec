@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,43 +27,60 @@
 package github.hua0512.flv.data.tag
 
 import github.hua0512.flv.data.amf.AmfValue
-import java.io.ByteArrayOutputStream
-import java.io.DataOutputStream
-import java.io.OutputStream
+import kotlinx.io.Buffer
+import kotlinx.io.Sink
+import kotlinx.io.readByteArray
+import kotlinx.serialization.Serializable
 
 /**
  * A script tag data, usually used for metadata
  * @author hua0512
  * @date : 2024/6/8 19:06
  */
-data class FlvScriptTagData(val values: List<AmfValue>) : FlvTagData(binaryData = byteArrayOf()) {
+@Serializable
+data class FlvScriptTagData(val values: List<AmfValue> = emptyList()) : FlvTagData {
 
   val valuesCount: Int
     get() = values.size
+
+  override val binaryData: ByteArray
+    get() = toByteArray()
 
   override val headerSize: Int = 0
 
   val bodySize: Int
     get() = values.sumOf { it.size }
 
-  override val size: Int get() = bodySize
+  override val size: Int
+    get() = bodySize
 
   operator fun get(index: Int): AmfValue = values[index]
 
-
-  override fun write(os: OutputStream) {
-    values.forEach { it.write(os) }
+  override fun write(sink: Sink) {
+    values.forEach { it.write(sink) }
   }
 
-  fun toByteArray(): ByteArray = ByteArrayOutputStream().use { baos ->
-    DataOutputStream(baos).use { dos ->
-      write(dos)
-      baos.toByteArray()
+  fun toByteArray(): ByteArray {
+    return Buffer().apply {
+      write(this)
+    }.readByteArray()
+  }
+
+  fun validateSize() {
+    val serialized = toByteArray()
+    val actualSize = serialized.size
+    if (actualSize != size) {
+      throw IllegalStateException(
+        "FlvScriptTagData size mismatch: calculated=$size, actual=$actualSize\n" +
+                "Values: ${values.joinToString { "${it::class.simpleName}(size=${it.size})" }}"
+      )
     }
   }
 
   override fun toString(): String {
-    return "FlvScriptTagDataData(values=$values, amfDataSize=$valuesCount, bodySize=$bodySize)"
+    return "FlvScriptTagData(values=${
+      values.joinToString { "${it::class.simpleName}(size=${it.size})" }
+    }, count=$valuesCount, size=$size)"
   }
 
 }

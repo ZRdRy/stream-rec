@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,16 +30,27 @@ import dagger.Module
 import dagger.Provides
 import github.hua0512.dao.config.AppConfigDao
 import github.hua0512.dao.user.UserDao
+import github.hua0512.data.event.DownloadEvent
+import github.hua0512.data.event.Event
+import github.hua0512.data.event.StreamerEvent
+import github.hua0512.plugins.base.IExtractorFactory
+import github.hua0512.repo.AppConfigRepo
 import github.hua0512.repo.LocalDataSource
 import github.hua0512.repo.LocalDataSourceImpl
+import github.hua0512.repo.config.EngineConfigManager
 import github.hua0512.repo.stream.StreamDataRepo
 import github.hua0512.repo.stream.StreamerRepo
 import github.hua0512.repo.upload.UploadRepo
 import github.hua0512.services.ActionService
 import github.hua0512.services.DownloadService
+import github.hua0512.services.ExtractorFactory
 import github.hua0512.services.UploadService
+import github.hua0512.utils.ThrowableSerializer
 import io.ktor.client.*
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.modules.SerializersModule
+import kotlinx.serialization.modules.polymorphic
+import kotlinx.serialization.modules.subclass
 import javax.inject.Singleton
 
 @Module
@@ -51,6 +62,20 @@ class AppModule {
     ignoreUnknownKeys = true
     isLenient = true
     encodeDefaults = false
+    allowSpecialFloatingPointValues = true
+    serializersModule = SerializersModule {
+      contextual(Throwable::class, ThrowableSerializer)
+      polymorphic(Event::class) {
+        subclass(DownloadEvent.DownloadStateUpdate::class)
+        subclass(DownloadEvent.DownloadStart::class)
+        subclass(DownloadEvent.DownloadError::class)
+        subclass(DownloadEvent.DownloadSuccess::class)
+        subclass(StreamerEvent.StreamerOnline::class)
+        subclass(StreamerEvent.StreamerOffline::class)
+        subclass(StreamerEvent.StreamerRecordStop::class)
+        subclass(StreamerEvent.StreamerException::class)
+      }
+    }
   }
 
   @Provides
@@ -58,7 +83,10 @@ class AppModule {
 
   @Provides
   @Singleton
-  fun provideHttpClient(json: Json, clientFactory: IHttpClientFactory): HttpClient = clientFactory.getClient(json)
+  fun provideHttpClient(json: Json, clientFactory: IHttpClientFactory, appConfigRepository: AppConfigRepo): HttpClient {
+    val config = kotlinx.coroutines.runBlocking { appConfigRepository.getAppConfig() }
+    return clientFactory.getClient(json, tlsVerification = config.tlsVerification)
+  }
 
   @Provides
   @Singleton
@@ -75,14 +103,20 @@ class AppModule {
     actionService: ActionService,
     streamerRepository: StreamerRepo,
     streamDataRepository: StreamDataRepo,
+    engineConfigManager: EngineConfigManager,
   ): DownloadService =
-    DownloadService(app, actionService, streamerRepository, streamDataRepository)
+    DownloadService(app, actionService, streamerRepository, streamDataRepository, engineConfigManager)
 
   @Provides
   @Singleton
   fun provideUploadService(app: App, uploadRepo: UploadRepo): UploadService = UploadService(app, uploadRepo)
 
   @Provides
-  fun provideLocalDataSource(appDao: AppConfigDao, userDao: UserDao): LocalDataSource = LocalDataSourceImpl(appDao, userDao)
+  fun provideLocalDataSource(appDao: AppConfigDao, userDao: UserDao): LocalDataSource =
+    LocalDataSourceImpl(appDao, userDao)
 
+  @Provides
+  @Singleton
+  fun provideExtractorFactory(app: App, client: HttpClient, json: Json): IExtractorFactory =
+    ExtractorFactory(app, client, json)
 }

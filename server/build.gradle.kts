@@ -25,8 +25,11 @@ dependencies {
   implementation(libs.io.ktor.server.cors.jvm)
   implementation(libs.io.ktor.server.call.logging.jvm)
   implementation(libs.io.ktor.server.call.id.jvm)
+  implementation(libs.io.ktor.server.auto.head.response)
   implementation(libs.io.ktor.server.content.negotiation.jvm)
+  implementation(libs.io.ktor.server.partial.content)
   implementation(libs.io.ktor.serialization.kotlinx.json.jvm)
+  implementation(libs.com.michael.bull.kotlin.result)
   implementation(libs.io.ktor.server.websockets.jvm)
   implementation(libs.ch.qos.logback.classic)
   testImplementation(libs.bundles.test.jvm)
@@ -34,12 +37,9 @@ dependencies {
 }
 
 private fun execAndCapture(vararg command: String): String {
-  val output = ByteArrayOutputStream()
-  project.exec {
-    commandLine = command.toList()
-    standardOutput = output
-  }
-  return output.toString().trim()
+  return providers.exec {
+    commandLine(command.toList())
+  }.standardOutput.asText.get().trim()
 }
 
 tasks.register("getGitVersion") {
@@ -69,10 +69,11 @@ tasks.processResources {
   dependsOn("getGitVersion")
   filesMatching("server.properties") {
     println("Replacing placeholders in server.properties")
-    expand(
-      "gitVersion" to project.extra["gitVersion"],
-      "gitCommitHash" to project.extra["gitCommitHash"],
-      "gitCommitCount" to project.extra["gitCommitCount"],
+    val props = mapOf(
+      "gitVersion" to (project.extra["gitVersion"] as String),
+      "gitCommitHash" to (project.extra["gitCommitHash"] as String),
+      "gitCommitCount" to (project.extra["gitCommitCount"] as Any),
     )
+    expand(props)
   }
 }

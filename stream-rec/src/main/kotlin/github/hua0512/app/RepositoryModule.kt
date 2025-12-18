@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,6 +28,7 @@ package github.hua0512.app
 
 import dagger.Module
 import dagger.Provides
+import github.hua0512.dao.config.EngineConfigDao
 import github.hua0512.dao.stats.StatsDao
 import github.hua0512.dao.stream.StreamDataDao
 import github.hua0512.dao.stream.StreamerDao
@@ -36,13 +37,16 @@ import github.hua0512.dao.upload.UploadDataDao
 import github.hua0512.dao.upload.UploadResultDao
 import github.hua0512.dao.user.UserDao
 import github.hua0512.repo.*
+import github.hua0512.repo.config.EngineConfigManager
 import github.hua0512.repo.stats.SummaryStatsRepo
 import github.hua0512.repo.stats.SummaryStatsRepoImpl
 import github.hua0512.repo.stream.StreamDataRepo
 import github.hua0512.repo.stream.StreamerRepo
 import github.hua0512.repo.upload.UploadRepo
+import kotlinx.serialization.json.Json
 
 /**
+ * Repository module that provides repositories for the application
  * @author hua0512
  * @date : 2024/2/19 11:49
  */
@@ -73,8 +77,15 @@ class RepositoryModule {
     uploadDataDao: UploadDataDao,
     uploadResultDao: UploadResultDao,
     statsDao: StatsDao,
-  ): UploadRepo = UploadActionRepository(streamerRepo, streamsRepo, uploadActionDao, uploadDataDao, uploadResultDao, statsDao)
+  ): UploadRepo =
+    UploadActionRepository(streamerRepo, streamsRepo, uploadActionDao, uploadDataDao, uploadResultDao, statsDao)
 
   @Provides
   fun provideStatsRepository(statsDao: StatsDao): SummaryStatsRepo = SummaryStatsRepoImpl(statsDao)
+
+  @Provides
+  fun provideEngineConfigManager(
+    engineConfigDao: EngineConfigDao,
+    json: Json,
+  ): EngineConfigManager = EngineConfigManager(engineConfigDao, json)
 }

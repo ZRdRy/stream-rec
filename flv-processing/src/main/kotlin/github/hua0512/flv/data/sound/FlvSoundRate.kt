@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,11 +30,12 @@ package github.hua0512.flv.data.sound
  * @author hua0512
  * @date : 2024/6/9 9:34
  */
-enum class FlvSoundRate(val value: Int) {
-  RATE_5_5KHZ(0),
-  RATE_11KHZ(1),
-  RATE_22KHZ(2),
-  RATE_44KHZ(3),
+enum class FlvSoundRate(val value: Int, val rate: Int = 44100) {
+  RATE_5_5KHZ(0, 5512),
+  RATE_11KHZ(1, 11025),
+  RATE_22KHZ(2, 22050),
+  RATE_44KHZ(3, 44100),
+  RATE_48KHZ(4, 48000),
   ;
 
   companion object {

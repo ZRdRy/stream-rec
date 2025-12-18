@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,9 @@
 
 package github.hua0512.plugins.douyin.danmu
 
+
+import com.github.michaelbull.result.get
+import com.github.michaelbull.result.getError
 import com.google.protobuf.ByteString
 import douyin.Dy
 import douyin.Dy.PushFrame
@@ -36,127 +39,101 @@ import github.hua0512.data.media.DanmuDataWrapper.DanmuData
 import github.hua0512.data.media.DanmuDataWrapper.EndOfDanmu
 import github.hua0512.data.stream.Streamer
 import github.hua0512.plugins.danmu.base.Danmu
-import github.hua0512.plugins.douyin.download.DouyinExtractor
-import github.hua0512.plugins.douyin.download.DouyinExtractor.Companion.commonDouyinParams
-import github.hua0512.plugins.douyin.download.DouyinExtractor.Companion.extractDouyinWebRid
-import github.hua0512.plugins.douyin.download.DouyinExtractor.Companion.populateDouyinCookieMissedParams
-import github.hua0512.plugins.douyin.download.getSignature
-import github.hua0512.plugins.douyin.download.loadWebmssdk
-import github.hua0512.plugins.download.COMMON_HEADERS
+import github.hua0512.plugins.douyin.danmu.DouyinWebcastMessages.CHAT_MESSAGE
+import github.hua0512.plugins.douyin.danmu.DouyinWebcastMessages.CONTROL_MESSAGE
+import github.hua0512.plugins.douyin.download.*
+import github.hua0512.plugins.douyin.download.DouyinRequestParams.Companion.ROOM_ID_KEY
+import github.hua0512.plugins.douyin.download.DouyinRequestParams.Companion.SIGNATURE_KEY
+import github.hua0512.plugins.douyin.download.DouyinRequestParams.Companion.USER_UNIQUE_KEY
 import github.hua0512.utils.decompressGzip
 import github.hua0512.utils.nonEmptyOrNull
 import github.hua0512.utils.withIOContext
-import io.ktor.client.request.*
-import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.websocket.*
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
+
 
 /**
  * Douyin danmu client
  * @author hua0512
  * @date : 2024/2/9 13:48
  */
-class DouyinDanmu(app: App) : Danmu(app, enablePing = false) {
-
-  override val websocketUrl: String
-    get() = webSocketDomains.random() + "/webcast/im/push/v2/"
-
-  override val heartBeatDelay: Long = 10000
-
-  override val heartBeatPack: ByteArray = byteArrayOf()
+open class DouyinDanmu(app: App) : Danmu(app, enablePing = false) {
 
   companion object {
     init {
       // load webmssdk js
       loadWebmssdk()
     }
-
-    private val webSocketDomains = arrayOf(
-      "wss://webcast5-ws-web-lq.douyin.com",
-      "wss://webcast5-ws-web-hl.douyin.com",
-      "wss://webcast5-ws-web-lf.douyin.com"
-    )
   }
 
 
+  override var websocketUrl: String = DouyinApi.randomWebSocketUrl
+
+  override val heartBeatDelay: Long = 15000
+
+  override val heartBeatPack: ByteArray = run {
+    val heartbeatPack = Dy.PushFrame.newBuilder()
+      .setPayloadType("hb")
+      .build()
+    heartbeatPack.toByteArray()
+  }
+
+  private var userUniqueId: String? = null
+
+  internal var idStr = ""
+
   override suspend fun initDanmu(streamer: Streamer, startTime: Instant): Boolean {
     // get room id
-    val roomId = extractDouyinWebRid(streamer.url) ?: return false
+    val webRid = extractDouyinWebRid(streamer.url) ?: return false
 
-    val config: DouyinDownloadConfig = if (streamer.templateStreamer != null) {
-      // try to get templates download config
-      streamer.templateStreamer?.downloadConfig?.run {
-        /**
-         * template config uses basic config [DefaultDownloadConfig], build a new douyin config using global platform values
-         */
-        DouyinDownloadConfig(
-          quality = app.config.douyinConfig.quality,
-          cookies = app.config.douyinConfig.cookies,
-        ).also {
-          it.danmu = this.danmu
-          it.maxBitRate = this.maxBitRate
-          it.outputFileFormat = this.outputFileFormat
-          it.outputFileName = this.outputFileName
-          it.outputFolder = this.outputFolder
-          it.onPartedDownload = this.onPartedDownload ?: emptyList()
-          it.onStreamingFinished = this.onStreamingFinished ?: emptyList()
-        }
-      } ?: throw IllegalArgumentException("${streamer.name} has template streamer but no download config") // should not happen
-    } else {
-      streamer.downloadConfig as? DouyinDownloadConfig ?: DouyinDownloadConfig()
-    }
+    val config: DouyinDownloadConfig = streamer.downloadConfig as DouyinDownloadConfig
 
     var cookies = (config.cookies?.nonEmptyOrNull() ?: app.config.douyinConfig.cookies)?.nonEmptyOrNull() ?: ""
 
     try {
       cookies = populateDouyinCookieMissedParams(cookies, app.client)
     } catch (e: Exception) {
-      logger.error("Failed to populate douyin cookie missed params", e)
+      logger.error("{} Failed to populate douyin cookie missed params", webRid, e)
       return false
     }
 
-    val response = app.client.get("https://live.douyin.com/webcast/room/web/enter/") {
-      headers {
-        COMMON_HEADERS.forEach { append(it.first, it.second) }
-        append(HttpHeaders.Referrer, DouyinExtractor.LIVE_DOUYIN_URL)
-        append(HttpHeaders.Cookie, cookies)
-      }
-      commonDouyinParams.forEach { (t, u) ->
-        parameter(t, u)
-      }
-      parameter("web_rid", roomId)
-    }
-
-    if (response.status != HttpStatusCode.OK) {
-      logger.debug("Streamer : {} response status is not OK : {}", streamer.name, response.status)
+    if (idStr.isEmpty()) {
+      logger.error("{} Failed to get douyin room id_str", webRid)
       return false
     }
+    logger.info("${streamer.name} douyin room id_str: $idStr")
 
-    val data = response.bodyAsText()
-    val roomIdPattern = "id_str\"\\s*:\\s*\"(\\d+)".toRegex()
-    val trueRoomId = roomIdPattern.find(data)?.groupValues?.get(1)?.toLong() ?: 0
-    if (trueRoomId == 0L) {
-      logger.error("Failed to get douyin room id_str")
-      return false
+    with(requestParams) {
+      fillDouyinCommonParams()
+      fillDouyinWsParams()
+
+      this[ROOM_ID_KEY] = idStr
+      updateSignature()
     }
-    logger.info("(${streamer.name}) douyin room id_str: $trueRoomId")
-    commonDouyinParams.forEach { (t, u) ->
-      requestParams[t] = u
-    }
-    requestParams["room_id"] = trueRoomId.toString()
-    requestParams["web_rid"] = roomId
-    // generate user id if not exists
-    requestParams["user_unique_id"] = DouyinExtractor.USER_ID!!
-    val signature = getSignature(trueRoomId.toString(), DouyinExtractor.USER_ID)
-    // add signature to request params
-    requestParams["signature"] = signature
     headersMap[HttpHeaders.Cookie] = cookies
     return true
   }
 
-  override fun launchHeartBeatJob(session: WebSocketSession) {
-    // Douyin does not use heart beat
+  override fun onDanmuRetry(retryCount: Int) {
+    // update signature
+    updateSignature()
+  }
+
+  private fun updateSignature() {
+    // update ws url
+    websocketUrl = DouyinApi.randomWebSocketUrl
+    assert(requestParams[ROOM_ID_KEY] != null) { "$ROOM_ID_KEY is null" }
+    // user unique id may be expired, get a new one
+    userUniqueId = getValidUserId().toString()
+    requestParams[USER_UNIQUE_KEY] = userUniqueId!!
+    // update signature
+    val signatureResult = getSignature(requestParams[ROOM_ID_KEY]!!, userUniqueId!!)
+    if (signatureResult.isErr) {
+      logger.error("{} Failed to get douyin signature: {}", idStr, signatureResult.getError())
+      return
+    }
+    requestParams[SIGNATURE_KEY] = signatureResult.get()!!
   }
 
   override fun oneHello(): ByteArray {
@@ -167,10 +144,28 @@ class DouyinDanmu(app: App) : Danmu(app, enablePing = false) {
   override suspend fun decodeDanmu(session: WebSocketSession, data: ByteArray): List<DanmuDataWrapper?> {
     val pushFrame = PushFrame.parseFrom(data)
     val logId = pushFrame.logId
+
+    // flag to indicate whether the payload is compressed (gzipped)
+    var isGzipped = pushFrame.headersListList.find { it.key == "compress_type" }?.let {
+      it.value == "gzip"
+    } == true
+
+    // payload may be compressed or not
     val payload = pushFrame.payload.toByteArray()
-    val decompressed = withIOContext {
-      decompressGzip(payload)
+    // decompress payload, may be gzip or not
+    val decompressed = if (isGzipped) {
+      try {
+        withIOContext {
+          decompressGzip(payload)
+        }
+      } catch (e: Exception) {
+        logger.error("douyin: failed to decompress payload: $pushFrame", e)
+        return emptyList()
+      }
+    } else {
+      payload
     }
+
     val payloadPackage = Dy.Response.parseFrom(decompressed)
     val internalExt = payloadPackage.internalExtBytes
     if (payloadPackage.needAck) {
@@ -179,23 +174,26 @@ class DouyinDanmu(app: App) : Danmu(app, enablePing = false) {
     val msgList = payloadPackage.messagesListList
     // each frame may contain multiple messages
     return msgList.mapNotNull { msg ->
-      when (msg.method) {
-        "WebcastChatMessage" -> {
+      logger.trace("msg: {}", msg)
+      val msgType = DouyinWebcastMessages.fromClassName(msg.method)
+      when (msgType) {
+        CHAT_MESSAGE -> {
           val chatMessage = Dy.ChatMessage.parseFrom(msg.payload)
           val textColor = chatMessage.rtfContent.defaultFormat.color.run {
             if (this.isNullOrEmpty()) -1 else this.toInt(16)
           }
+          val time = if (chatMessage.eventTime == 0L) System.currentTimeMillis() else chatMessage.eventTime * 1000
           DanmuData(
             chatMessage.user.id,
             chatMessage.user.nickNameBytes.toStringUtf8(),
             textColor,
             chatMessage.contentBytes.toStringUtf8(),
             chatMessage.rtfContent.defaultFormat.fontSize,
-            chatMessage.eventTime * 1000,
+            time,
           )
         }
 
-        "WebcastControlMessage" -> {
+        CONTROL_MESSAGE -> {
           val controlMessage = Dy.ControlMessage.parseFrom(msg.payload)
           val status = controlMessage.status
           if (status == 3) {
@@ -212,9 +210,7 @@ class DouyinDanmu(app: App) : Danmu(app, enablePing = false) {
     }
   }
 
-
   private suspend fun sendAck(session: WebSocketSession, logId: Long, internalExt: ByteString) {
-//    logger.debug("Sending ack for logId: $logId")
     val pushFrame = PushFrame.newBuilder()
       .setPayloadType("ack")
       .setLogId(logId)
@@ -222,5 +218,6 @@ class DouyinDanmu(app: App) : Danmu(app, enablePing = false) {
       .build()
     val byteArray = pushFrame.toByteArray()
     session.send(byteArray)
+    logger.trace("sent ack : {}", byteArray.decodeToString())
   }
 }

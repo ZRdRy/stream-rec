@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,58 +26,83 @@
 
 package github.hua0512.plugins.twitch.download
 
-import github.hua0512.plugins.download.COMMON_HEADERS
+import com.github.michaelbull.result.*
+import github.hua0512.app.COMMON_HEADERS
+import github.hua0512.plugins.base.ExtractorError
+import github.hua0512.utils.mapError
 import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
-import io.ktor.http.auth.*
 import kotlinx.serialization.json.*
 
 private const val POST_URL = "https://gql.twitch.tv/gql"
-private const val CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
-private const val CLIENT_ID_HEADER = "Client-Id"
+internal const val CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
+internal const val CLIENT_ID_HEADER = "Client-Id"
+internal const val DEVICE_ID_HEADER = "device-id"
 
-internal suspend fun twitchPostQPL(client: HttpClient, json: Json, data: String, authToken: String? = null): JsonElement {
-  val request = client.post(POST_URL) {
-    header(CLIENT_ID_HEADER, CLIENT_ID)
-    header(HttpHeaders.ContentType, "text/plain")
-    // auth token is required
-    authToken?.let {
-      header(HttpHeaders.Authorization, "${AuthScheme.OAuth} $it")
+internal suspend fun twitchPostQPL(
+  client: HttpClient,
+  json: Json,
+  data: String,
+  headers: Map<String, String>,
+): Result<JsonElement, ExtractorError> {
+  val apiResult = runCatching {
+    client.post(POST_URL) {
+      headers.forEach { (key, value) ->
+        header(key, value)
+      }
+
+//    if (headers.containsKey(HttpHeaders.Authorization).not()) {
+//      throw InvalidExtractionParamsException("Authorization header is required")
+//    }
+
+      COMMON_HEADERS.forEach { (key, value) ->
+        header(key, value)
+      }
+      contentType(ContentType.Application.Json)
+      setBody(data)
     }
-    COMMON_HEADERS.forEach { (key, value) ->
-      header(key, value)
-    }
-    contentType(ContentType.Application.Json)
-    setBody(data)
+  }.mapError()
+
+  if (apiResult.isErr) {
+    return apiResult.asErr()
   }
 
-  val body = request.bodyAsText()
+  val response = apiResult.get()!!
+  val body = response.bodyAsText()
   // check if data is an array or object
-  val response = if (body.startsWith("[")) {
-    json.parseToJsonElement(body).jsonArray
-  } else {
-    json.parseToJsonElement(body).jsonObject
-  }
-  // check if response has error
-  if (response is JsonArray) {
-    // check if response has error
-    response.forEach {
-      if (it.jsonObject.containsKey("errors")) {
-        val error = it.jsonObject["errors"]!!.jsonArray.first().jsonObject
-        val message = error["message"]!!.jsonPrimitive.content
-        throw IllegalStateException("Error: $message")
+  val jsonResult = runCatching {
+    if (body.startsWith("[")) {
+      json.parseToJsonElement(body).jsonArray
+    } else {
+      json.parseToJsonElement(body).jsonObject
+    }
+  }.mapError {
+    ExtractorError.InvalidResponse("Invalid JSON response : ${it.message}")
+  }.andThen { jsonElement ->
+    val elements = jsonElement as? JsonArray ?: listOf(jsonElement)
+    elements.forEach {
+      val mapError = runCatching {
+        checkForErrors(it.jsonObject)
+      }.mapError {
+        ExtractorError.ApiError(it)
+      }
+      if (mapError.isErr) {
+        return@andThen mapError.asErr()
       }
     }
-  } else {
-    if (response.jsonObject.containsKey("errors")) {
-      val error = response.jsonObject["errors"]!!.jsonArray.first().jsonObject
-      val message = error["message"]!!.jsonPrimitive.content
-      throw IllegalStateException("Error: $message")
-    }
+    Ok(jsonElement)
   }
-  return response
+  return jsonResult
+}
+
+
+private fun checkForErrors(jsonObject: JsonObject) {
+  jsonObject["errors"]?.jsonArray?.firstOrNull()?.jsonObject?.let {
+    val message = it["message"]!!.jsonPrimitive.content
+    throw IllegalStateException("Error: $message")
+  }
 }
 
 internal fun buildPersistedQueryRequest(operationName: String, sha256Hash: String, variables: JsonObject): String {

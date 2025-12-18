@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,8 +28,7 @@ package github.hua0512.flv.operators
 
 import github.hua0512.flv.data.FlvData
 import github.hua0512.flv.data.FlvTag
-import github.hua0512.flv.data.amf.Amf0Keyframes
-import github.hua0512.flv.data.amf.Amf0Value
+import github.hua0512.flv.data.amf.AmfValue.Amf0Value
 import github.hua0512.flv.data.other.FlvMetadataInfo
 import github.hua0512.flv.data.sound.FlvSoundType
 import github.hua0512.flv.exceptions.FlvDataErrorException
@@ -39,10 +38,9 @@ import github.hua0512.flv.utils.createMetadataTag
 import github.hua0512.flv.utils.isTrueScripTag
 import github.hua0512.plugins.StreamerContext
 import github.hua0512.utils.logger
-import io.exoquery.pprint
+import io.exoquery.kmp.pprint
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlin.collections.plus
 
 
 private const val TAG = "FlvMetadataInjectorRule"
@@ -65,8 +63,6 @@ internal fun Flow<FlvData>.injectMetadata(context: StreamerContext): Flow<FlvDat
   }
 
   fun FlvTag.injectMetadata(): FlvTag {
-
-
     var tagData = data as ScriptData
     val obj = tagData[1] // This is the second AMF value in the metadata
 
@@ -105,6 +101,7 @@ internal fun Flow<FlvData>.injectMetadata(context: StreamerContext): Flow<FlvDat
   collect { data ->
     if (data is FlvTag && data.num == 1) {
       if (data.isTrueScripTag()) {
+        logger.debug("${context.name} Script tag found : {}", pprint(data, defaultHeight = 50))
         val newTag = data.injectMetadata()
         emit(newTag)
         return@collect
@@ -141,33 +138,37 @@ internal fun Map<String, Amf0Value>.sortKeys(): Map<String, Amf0Value> {
 internal fun FlvMetadataInfo.toAmfMap(): Map<String, Amf0Value> {
   val streamRec = Amf0Value.String("Stream-rec")
   val frames = keyframes
-  val amf0Keyframes = Amf0Keyframes(ArrayList()).apply {
+  val amf0Keyframes = Amf0Value.Amf0Keyframes().apply {
     if (frames.isNotEmpty()) {
       try {
         addKeyframes(frames)
       } catch (_: IllegalArgumentException) {
-        logger.warn("Maximum keyframes size exceeded, truncating to ${Amf0Keyframes.MAX_KEYFRAMES_PERMITTED}")
+        logger.warn("Maximum keyframes size exceeded, truncating to ${Amf0Value.Amf0Keyframes.MAX_KEYFRAMES_PERMITTED}")
       }
       logger.debug("keyframes : {}", keyframesCount)
     }
   }
 
   return mapOf(
-    "hasAudio" to Amf0Value.Boolean(hasAudio),
-    "hasVideo" to Amf0Value.Boolean(hasVideo),
-    "hasMetadata" to Amf0Value.Boolean(hasScript),
-    "hasKeyframes" to Amf0Value.Boolean(hasKeyframes),
     "canSeekToEnd" to Amf0Value.Boolean(canSeekToEnd),
     "duration" to Amf0Value.Number(duration.toDouble()),
     "filesize" to Amf0Value.Number(fileSize.toDouble()),
-    "metadatacreator" to streamRec,
     "width" to Amf0Value.Number(width.toDouble()),
     "height" to Amf0Value.Number(height.toDouble()),
-    "keyframes" to amf0Keyframes,
+    "audiosize" to Amf0Value.Number(audioSize.toDouble()),
+    "audiodatarate" to Amf0Value.Number(audioDataRate.toDouble()),
+    "audiocodecid" to Amf0Value.Number(audioCodecId?.value?.toDouble() ?: 0.0),
+    "audiosamplerate" to Amf0Value.Number(audioSampleRate?.rate?.toDouble() ?: 0.0),
+    "audiosamplesize" to Amf0Value.Number(audioSampleSize?.size?.toDouble() ?: 0.0),
+    "framerate" to Amf0Value.Number(frameRate.toDouble()),
+    "videosize" to Amf0Value.Number(videoSize.toDouble()),
+    "videodatarate" to Amf0Value.Number(videoDataRate.toDouble()),
+    "videocodecid" to Amf0Value.Number(videoCodecId?.value?.toDouble() ?: 0.0),
     "stereo" to Amf0Value.Boolean(audioSoundType == FlvSoundType.STEREO),
     "lasttimestamp" to Amf0Value.Number(lastTimestamp.toDouble()),
     "lastkeyframetimestamp" to Amf0Value.Number(keyframes.lastOrNull()?.timestamp?.toDouble() ?: 0.0),
     "lastkeyframelocation" to Amf0Value.Number(keyframes.lastOrNull()?.filePosition?.toDouble() ?: 0.0),
-    "recordTool" to streamRec
+    "metadatacreator" to streamRec,
+    "keyframes" to amf0Keyframes,
   )
 }

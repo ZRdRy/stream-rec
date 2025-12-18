@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -39,6 +39,7 @@ import ch.qos.logback.core.util.FileSize
 import github.hua0512.app.App
 import github.hua0512.app.AppComponent
 import github.hua0512.app.DaggerAppComponent
+import github.hua0512.backend.ServerConfig
 import github.hua0512.backend.backendServer
 import github.hua0512.data.config.AppConfig
 import github.hua0512.plugins.event.EventCenter
@@ -46,12 +47,14 @@ import github.hua0512.repo.AppConfigRepo
 import github.hua0512.repo.LocalDataSource
 import github.hua0512.utils.mainLogger
 import github.hua0512.utils.nonEmptyOrNull
+import github.hua0512.utils.withIOContext
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.flowOn
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
-import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.coroutineContext
 import kotlin.io.path.Path
 import kotlin.io.path.pathString
 
@@ -69,47 +72,58 @@ class Application {
     private var server: EmbeddedServer<ApplicationEngine, NettyApplicationEngine.Configuration>? = null
 
     @JvmStatic
-    fun main(args: Array<String>): Unit = runBlocking {
-      val appComponent: AppComponent = DaggerAppComponent.create()
+    fun main(args: Array<String>): Unit {
 
-      val app = appComponent.getAppConfig()
+      // enable coroutine debug mode
+      System.setProperty(DEBUG_PROPERTY_NAME, DEBUG_PROPERTY_VALUE_ON)
 
-      val jobScope = initComponents(this.coroutineContext, appComponent, app)
+      runBlocking(CoroutineName("main")) {
+        val appComponent: AppComponent = DaggerAppComponent.create()
 
-      // start the app
-      // add shutdown hook
-      Runtime.getRuntime().addShutdownHook(Thread {
-        mainLogger.info("Stream-rec shutting down...")
-        server?.stop(1000, 1000)
-        Thread.sleep(1000)
-        jobScope.cancel()
-        app.releaseAll()
-        appComponent.getDatabase().close()
-        EventCenter.stop()
-        server = null
-      })
-      // wait for the job to finish
-      jobScope.coroutineContext[Job]?.join()
+        val app = appComponent.getAppConfig()
+
+        val jobScope = initComponents(appComponent, app)
+
+        // start the app
+        // add shutdown hook
+        Runtime.getRuntime().addShutdownHook(Thread {
+          mainLogger.info("Stream-rec shutting down...")
+          server?.stop(1000, 1000)
+          Thread.sleep(1000)
+          jobScope.cancel()
+          app.releaseAll()
+          appComponent.getDatabase().close()
+          EventCenter.stop()
+          server = null
+        })
+        // wait for the job to finish
+        jobScope.coroutineContext[Job]?.join()
+      }
     }
 
+    @OptIn(InternalCoroutinesApi::class)
     private suspend inline fun initComponents(
-      context: CoroutineContext,
       appComponent: AppComponent,
       app: App,
     ): CoroutineScope {
-      val scope = CoroutineScope(context + Dispatchers.IO + SupervisorJob())
+      val newContext =
+        coroutineContext.newCoroutineContext(Dispatchers.Default + SupervisorJob() + CoroutineName("mainJobScope"))
+      val scope = CoroutineScope(newContext)
+
+      // Start EventCenter
+      EventCenter.start()
+
       val appConfigRepository = appComponent.getAppConfigRepository()
       val downloadService = appComponent.getDownloadService()
       val uploadService = appComponent.getUploadService()
 
       scope.apply {
         // await for app config to be loaded
-        withContext(Dispatchers.IO) {
-          initAppConfig(appConfigRepository, app)
-        }
+        initAppConfig(appConfigRepository, app)
         // launch a job to listen for app config changes
-        launch(Dispatchers.IO) {
+        launch {
           appConfigRepository.streamAppConfig()
+            .flowOn(Dispatchers.IO)
             .collect {
               app.updateConfig(it)
               // TODO : find a way to update download semaphore dynamically
@@ -120,26 +134,27 @@ class Application {
           downloadService.run(scope)
         }
 
-        // start upload service
-        launch {
-          uploadService.run()
-        }
+        val downloadStateEventPlugin = appComponent.getDownloadStateEventPlugin()
 
-        // start a job to listen for events
-        launch {
-          EventCenter.run()
-        }
         // start the backend server
-        launch {
-          server = backendServer(
+        launch(CoroutineName("serverScope")) {
+          val serverConfig = ServerConfig(
+            port = 12555,
+            host = "0.0.0.0",
+            parentContext = scope.coroutineContext,
             json = appComponent.getJson(),
-            appComponent.getUserRepo(),
-            appComponent.getAppConfigRepository(),
-            appComponent.getStreamerRepo(),
-            appComponent.getStreamDataRepo(),
-            appComponent.getStatsRepository(),
-            appComponent.getUploadRepo(),
-          ).apply {
+            userRepo = appComponent.getUserRepo(),
+            appConfigRepo = appComponent.getAppConfigRepository(),
+            streamerRepo = appComponent.getStreamerRepo(),
+            streamDataRepo = appComponent.getStreamDataRepo(),
+            statsRepo = appComponent.getStatsRepository(),
+            uploadRepo = appComponent.getUploadRepo(),
+            extractorFactory = appComponent.getExtractorFactory(),
+            engineConfigRepo = appComponent.getEngineConfigRepository(),
+            downloadStateEventPlugin = downloadStateEventPlugin,
+          )
+
+          server = backendServer(serverConfig).apply {
             start()
           }
         }
@@ -210,8 +225,8 @@ class Application {
       }
     }
 
-    private suspend fun initAppConfig(repo: AppConfigRepo, app: App): AppConfig {
-      return repo.getAppConfig().also {
+    private suspend fun initAppConfig(repo: AppConfigRepo, app: App): AppConfig = withIOContext {
+      repo.getAppConfig().also {
         app.updateConfig(it)
         // TODO : find a way to update download semaphore dynamically
       }

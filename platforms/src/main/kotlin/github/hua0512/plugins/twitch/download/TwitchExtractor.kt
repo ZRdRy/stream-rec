@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,16 +26,21 @@
 
 package github.hua0512.plugins.twitch.download
 
+import com.github.michaelbull.result.*
 import github.hua0512.data.media.MediaInfo
 import github.hua0512.data.media.VideoFormat
-import github.hua0512.data.platform.TwitchQuality
+import github.hua0512.data.platform.HlsQuality
 import github.hua0512.data.stream.StreamInfo
 import github.hua0512.plugins.base.Extractor
-import github.hua0512.plugins.base.exceptions.InvalidExtractionParamsException
-import github.hua0512.plugins.base.exceptions.InvalidExtractionUrlException
+import github.hua0512.plugins.base.ExtractorError
+import github.hua0512.utils.generateRandomString
 import io.ktor.client.*
 import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import io.ktor.http.*
+import io.ktor.http.auth.*
 import kotlinx.serialization.json.*
+import kotlin.collections.set
 
 /**
  * Extractor for Twitch. Used to extract media information from Twitch.
@@ -53,95 +58,126 @@ class TwitchExtractor(http: HttpClient, json: Json, override val url: String) : 
 
   override val regexPattern: Regex = URL_REGEX.toRegex()
 
-  internal lateinit var id: String
+  internal var id: String = ""
+  var authToken: String = ""
 
   private lateinit var bodyJson: JsonObject
 
-  internal lateinit var authToken: String
 
-  override fun match(): Boolean {
-    return super.match().also {
-      if (it) {
-        id = regexPattern.find(url)?.groupValues?.get(1) ?: throw InvalidExtractionUrlException("Failed to extract id from Twitch url, url: $url")
-      }
+  init {
+    platformHeaders[CLIENT_ID_HEADER] = CLIENT_ID
+    platformHeaders[HttpHeaders.Referrer] = BASE_URL
+    platformHeaders[DEVICE_ID_HEADER] = generateRandomString(16, noUpperLetters = true)
+  }
+
+  override fun match(): Result<String, ExtractorError> = super.match().andThen {
+    id = regexPattern.find(url)?.groupValues?.get(1) ?: ""
+    if (id.isNotEmpty()) {
+      Ok(id)
+    } else {
+      Err(ExtractorError.InvalidExtractionUrl)
     }
   }
 
-  override suspend fun isLive(): Boolean {
+
+  override suspend fun isLive(): Result<Boolean, ExtractorError> {
     // queries
     val queries = arrayOf(
       buildPersistedQueryRequest(
         "ChannelShell",
-        "c3ea5a669ec074a58df5c11ce3c27093fa38534c94286dc14b68a25d5adcbf55",
+        "fea4573a7bf2644f5b3f2cbbdcbee0d17312e48d2e55f080589d053aad353f11",
         buildJsonObject {
           put("login", id)
-          put("lcpVideosEnabled", false)
         }
       ),
       buildPersistedQueryRequest(
         "StreamMetadata",
-        "059c4653b788f5bdb2f5a2d2a24b0ddc3831a15079001a3d927556a96fb0517f",
+        "b57f9b910f8cd1a4659d894fe7550ccc81ec9052c01e438b290fd66a040b9b93",
         buildJsonObject {
           put("channelLogin", id)
-          put("previewImageURL", "")
+          put("includeIsDJ", true)
         }
       ),
     )
-    val response = twitchPostQPL(http, json, queries.contentToString(), authToken)
+    if (authToken.isNotEmpty()) {
+      platformHeaders[HttpHeaders.Authorization] = "${AuthScheme.OAuth} $authToken"
+    }
+    val apiResult = twitchPostQPL(http, json, queries.contentToString(), getRequestHeaders())
+
+    if (apiResult.isErr) {
+      return apiResult.asErr()
+    }
+    val response = apiResult.get()!!
     val data =
       response.jsonArray[1].jsonObject["data"]?.jsonObject
-        ?: throw InvalidExtractionParamsException("($id) failed to get stream data, response: $response")
-    val user = data["user"] as? JsonObject ?: throw InvalidExtractionParamsException("($id) failed to get stream user metadata, response: $response")
+        ?: return Err(ExtractorError.InvalidResponse("($id) failed to get stream metadata, response: $response"))
+    val user = data["user"] as? JsonObject
+      ?: return Err(ExtractorError.InvalidResponse("($id) user not found, response: $response"))
 
-    val stream = user["stream"] ?: return false
+    val stream = user["stream"] ?: return Ok(false)
     // if stream is not live, stream is a JsonNull
-    if (stream !is JsonObject) return false
+    if (stream !is JsonObject) return Ok(false)
     // get stream type
-    val type = stream["type"] ?: return false
+    val type = stream["type"] ?: return Ok(false)
     if (type.jsonPrimitive.content != "live") {
-      return false
+      return Ok(false)
     }
     bodyJson = user
-    return true
+    return Ok(true)
   }
 
 
-  override suspend fun extract(): MediaInfo {
-    val isLive = isLive()
+  override suspend fun extract(): Result<MediaInfo, ExtractorError> {
+    val liveResult = isLive()
+    if (liveResult.isErr) {
+      return liveResult.asErr()
+    }
     var mediaInfo = MediaInfo(url, "", id, "", "")
 
-    if (!isLive) {
-      return mediaInfo
+    val live = liveResult.get()!!
+    if (!live) {
+      return Ok(mediaInfo)
     }
 
-    val lastBroadcast = bodyJson["lastBroadcast"]?.jsonObject ?: throw IllegalArgumentException("Invalid response, response: $bodyJson")
+    val lastBroadcast =
+      bodyJson["lastBroadcast"]?.jsonObject ?: throw IllegalArgumentException("Invalid response, response: $bodyJson")
     val title = lastBroadcast["title"]?.jsonPrimitive?.content ?: ""
     val artistProfileUrl = bodyJson["profileImageURL"]?.jsonPrimitive?.content ?: ""
 
     // skip stream info extraction, only return basic info
     if (skipStreamInfo) {
-      val streamInfo = StreamInfo(url, VideoFormat.hls, TwitchQuality.Source.value, 0, 0)
-      mediaInfo = mediaInfo.copy(artistImageUrl = artistProfileUrl, title = title, live = true, streams = listOf(streamInfo))
-      return mediaInfo
+      val streamInfo = StreamInfo(url, VideoFormat.hls, HlsQuality.Source.value, 0, 0)
+      mediaInfo =
+        mediaInfo.copy(artistImageUrl = artistProfileUrl, title = title, live = true, streams = listOf(streamInfo))
+      return Ok(mediaInfo)
     }
 
-    val accessTokenResponse = twitchPostQPL(
+    val accessTokenApiResult = twitchPostQPL(
       http,
       json,
-      buildPersistedQueryRequest("PlaybackAccessToken", "0828119ded1c13477966434e15800ff57ddacf13ba1911c129dc2200705b0712", buildJsonObject {
-        put("isLive", true)
-        put("login", id)
-        put("isVod", false)
-        put("vodID", "")
-        put("playerType", "site")
-        put("isClip", false)
-        put("clipID", "")
-      }),
-      authToken
+      buildPersistedQueryRequest(
+        "PlaybackAccessToken",
+        "ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9",
+        buildJsonObject {
+          put("isLive", true)
+          put("login", id)
+          put("isVod", false)
+          put("vodID", "")
+          put("playerType", "site")
+          put("isClip", false)
+          put("clipID", "")
+          put("platform", "site")
+        }),
+      getRequestHeaders()
     )
 
+    if (accessTokenApiResult.isErr) {
+      return accessTokenApiResult.asErr()
+    }
+    val accessTokenResponse = accessTokenApiResult.get()!!
+
     val accessToken = accessTokenResponse.jsonObject["data"]?.jsonObject?.get("streamPlaybackAccessToken")?.jsonObject
-      ?: throw InvalidExtractionParamsException("($id) failed to get stream playback access token, response: $accessTokenResponse")
+      ?: return Err(ExtractorError.InvalidResponse("($id) failed to get stream playback access token, response: $accessTokenResponse"))
 
     val valueToken = accessToken["value"]?.jsonPrimitive?.content ?: ""
     val signature = accessToken["signature"]?.jsonPrimitive?.content ?: ""
@@ -156,8 +192,15 @@ class TwitchExtractor(http: HttpClient, json: Json, override val url: String) : 
       parameter("sig", signature)
       parameter("token", valueToken)
     }
-    val streams = parseHlsPlaylist(resp)
+    if (resp.isErr) return resp.asErr()
+
+    val hlsString = resp.get()!!.bodyAsText()
+    val parseResult = parseHlsPlaylist(hlsString)
+    if (parseResult.isErr) {
+      return parseResult.asErr()
+    }
+    val streams = parseResult.get()!!
     mediaInfo = mediaInfo.copy(artistImageUrl = artistProfileUrl, title = title, live = true, streams = streams)
-    return mediaInfo
+    return Ok(mediaInfo)
   }
 }

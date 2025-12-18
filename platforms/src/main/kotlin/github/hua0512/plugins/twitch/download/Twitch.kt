@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,81 +26,75 @@
 
 package github.hua0512.plugins.twitch.download
 
+import com.github.michaelbull.result.Result
 import github.hua0512.app.App
-import github.hua0512.data.config.DownloadConfig
+import github.hua0512.data.config.AppConfig
 import github.hua0512.data.config.DownloadConfig.TwitchDownloadConfig
-import github.hua0512.data.platform.TwitchQuality
-import github.hua0512.data.stream.StreamInfo
-import github.hua0512.plugins.base.exceptions.InvalidExtractionUrlException
-import github.hua0512.plugins.download.base.Download
+import github.hua0512.data.config.engine.DownloadEngines
+import github.hua0512.plugins.base.ExtractorError
+import github.hua0512.plugins.download.base.HlsPlatformDownloader
 import github.hua0512.plugins.twitch.danmu.TwitchDanmu
 import github.hua0512.utils.nonEmptyOrNull
 
 /**
+ * Twitch downloader.
  * @author hua0512
  * @date : 2024/5/3 21:47
  */
-class Twitch(app: App, danmu: TwitchDanmu, extractor: TwitchExtractor) : Download<TwitchDownloadConfig>(app, danmu, extractor) {
+class Twitch(
+  app: App,
+  danmu: TwitchDanmu,
+  override val extractor: TwitchExtractor,
+) : HlsPlatformDownloader<TwitchDownloadConfig>(app, danmu, extractor) {
 
 
-  init {
-    extractor.skipStreamInfo = app.config.twitchConfig.skipAds || app.config.twitchConfig.twitchProxyPlaylist?.nonEmptyOrNull() != null
-  }
-
-
-  override fun createDownloadConfig(): TwitchDownloadConfig = TwitchDownloadConfig(
-    quality = app.config.twitchConfig.quality,
-    authToken = app.config.twitchConfig.authToken,
-  )
-
-  override suspend fun shouldDownload(onLive: () -> Unit): Boolean {
-    val authToken = (config.authToken?.nonEmptyOrNull() ?: app.config.twitchConfig.authToken).nonEmptyOrNull()
-      ?: throw InvalidExtractionUrlException("Twitch requires an auth token to download")
-    (extractor as TwitchExtractor).authToken = authToken
-
-    (config.cookies ?: app.config.twitchConfig.cookies)?.nonEmptyOrNull()?.also {
-      extractor.cookies = it
+  override suspend fun shouldDownload(onLive: () -> Unit): Result<Boolean, ExtractorError> {
+    val authToken = downloadConfig.authToken.orEmpty().ifEmpty {
+      ""
+//      throw InvalidExtractionUrlException("Twitch requires an auth token to download")
     }
-
+    extractor.authToken = authToken
+    // update extractor params
+    updateParams(app.config)
     return super.shouldDownload(onLive)
   }
 
-  override suspend fun <T : DownloadConfig> T.applyFilters(streams: List<StreamInfo>): StreamInfo {
-    this as TwitchDownloadConfig
-    val userPreferredQuality = quality ?: app.config.twitchConfig.quality
-    // if source quality is selected, return the first stream
-    if (userPreferredQuality == TwitchQuality.Source) {
-      return streams.first()
-    } else if (userPreferredQuality == TwitchQuality.Audio) {
-      return streams.first { it.quality == TwitchQuality.Audio.value }
+  override fun getProgramArgs(): List<String> = buildList {
+    val config = app.config.twitchConfig
+    // check if skip ads is enabled
+    if (config.skipAds) {
+      // add skip ads to streamlink args
+      add("--twitch-disable-ads")
     }
-    // resolution quality
-    val preferredResolution = userPreferredQuality.value.removePrefix("p").toInt()
-    // otherwise, filter by user defined quality
-    val selectedStream = streams.filter { it.quality.contains(userPreferredQuality.value) }
-    if (selectedStream.isEmpty()) {
-      // if no stream found, return the first lower quality than user defined quality
-      return streams.map { (it.extras["resolution"].toString().split("x").last().toIntOrNull() ?: 0) to it }.filter {
-        it.first < preferredResolution
-      }.maxByOrNull {
-        it.first
-      }?.second?.apply {
-        logger.warn("No stream found with quality $userPreferredQuality, using ${this.quality} instead")
-      } ?: run {
-        logger.warn("No stream found with quality $userPreferredQuality, using the best available")
-        streams.first()
+    // set twitch auth token if available,
+    // this should not be needed as currently we are passing the entire headers map to streamlink
+    if (extractor.authToken.isNotEmpty()) {
+      add("--twitch-api-header=Authorization=OAuth ${extractor.authToken}")
+    }
+    // configure streamlink-ttvlol options
+    config.twitchProxyPlaylist?.nonEmptyOrNull()?.let {
+      add("--twitch-proxy-playlist=$it")
+      if (config.twitchProxyPlaylistFallback) add("--twitch-proxy-playlist-fallback")
+    }
+    config.twitchProxyPlaylistExclude?.nonEmptyOrNull()?.let { add("--twitch-proxy-playlist-exclude=$it") }
+  }
+
+  private fun updateParams(config: AppConfig) {
+    val engine = streamer.engine ?: DownloadEngines.fromString(config.engine)
+    when (engine) {
+      DownloadEngines.STREAMLINK ->
+        // always skip extractor stream info when using streamlink
+        extractor.skipStreamInfo = true
+      // for other engines, we need extractor to provide stream info
+      else -> {
+        extractor.skipStreamInfo = false
       }
     }
-    val filteredStream = selectedStream.map {
-      (it.extras["resolution"].toString().split("x").last().toIntOrNull() ?: 0) to it
-    }.filter {
-      it.first >= preferredResolution
-    }.minByOrNull {
-      it.first
-    }?.second ?: run {
-      logger.warn("No stream found with quality $userPreferredQuality, using the best available")
-      selectedStream.first()
-    }
-    return filteredStream
   }
+
+  override fun onConfigUpdated(config: AppConfig) {
+    super.onConfigUpdated(config)
+    updateParams(config)
+  }
+
 }

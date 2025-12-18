@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,96 +26,130 @@
 
 package github.hua0512.plugins.huya.download
 
+import com.github.michaelbull.result.Err
+import com.github.michaelbull.result.Ok
+import com.github.michaelbull.result.Result
+import com.github.michaelbull.result.get
 import github.hua0512.app.App
-import github.hua0512.data.config.DownloadConfig
+import github.hua0512.data.config.AppConfig
 import github.hua0512.data.config.DownloadConfig.HuyaDownloadConfig
 import github.hua0512.data.media.VideoFormat
 import github.hua0512.data.stream.StreamInfo
-import github.hua0512.plugins.download.base.Download
+import github.hua0512.plugins.base.ExtractorError
+import github.hua0512.plugins.download.base.PlatformDownloader
 import github.hua0512.plugins.huya.danmu.HuyaDanmu
-import github.hua0512.utils.nonEmptyOrNull
+import github.hua0512.utils.debug
+import github.hua0512.utils.info
+import github.hua0512.utils.warn
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-class Huya(app: App, override val danmu: HuyaDanmu, override val extractor: HuyaExtractor) :
-  Download<HuyaDownloadConfig>(app, danmu, extractor) {
+class Huya(
+  app: App,
+  override val danmu: HuyaDanmu,
+  override val extractor: HuyaExtractor,
+) :
+  PlatformDownloader<HuyaDownloadConfig>(app, danmu, extractor) {
 
   init {
-    extractor.forceOrigin = app.config.huyaConfig.forceOrigin
+    onConfigUpdated(app.config)
   }
 
 
-  override fun createDownloadConfig(): HuyaDownloadConfig {
-    return HuyaDownloadConfig(
-      primaryCdn = app.config.huyaConfig.primaryCdn,
-      sourceFormat = app.config.huyaConfig.sourceFormat,
-    )
-  }
-
-  override suspend fun shouldDownload(onLive: () -> Unit): Boolean {
-    (config.cookies ?: app.config.huyaConfig.cookies)?.nonEmptyOrNull()?.also {
-      extractor.cookies = it
-    }
-    return super.shouldDownload {
-      onLive()
-      // bind danmu properties
-      with(danmu) {
-        presenterUid = extractor.presenterUid
-      }
+  override suspend fun shouldDownload(onLive: () -> Unit): Result<Boolean, ExtractorError> = super.shouldDownload {
+    onLive()
+    // bind danmu properties
+    with(danmu) {
+      presenterUid = extractor.presenterUid
     }
   }
 
-  override suspend fun <T : DownloadConfig> T.applyFilters(streams: List<StreamInfo>): StreamInfo {
-    this as HuyaDownloadConfig
+  override fun getProgramArgs(): List<String> = emptyList()
+
+  override fun onConfigUpdated(config: AppConfig) {
+    super.onConfigUpdated(config)
+    extractor.forceOrigin = config.huyaConfig.forceOrigin
+  }
+
+  override fun onDownloadError(exception: Exception) {
+
+  }
+
+
+  override suspend fun applyFilters(streams: List<StreamInfo>): Result<StreamInfo, ExtractorError> {
+    val config = downloadConfig
     // user defined source format
-    val userPreferredFormat = (sourceFormat ?: app.config.huyaConfig.sourceFormat).apply {
+    val userPreferredFormat = (config.sourceFormat ?: app.config.huyaConfig.sourceFormat).apply {
       if (this !in streams.map { it.format }) {
-        logger.info("${streamer.name} defined source format $this is not available, choosing the best available")
+        info("defined source format {} is not available, choosing the best available", this)
       }
     }
     // user defined max bit rate
-    val maxUserBitRate = (maxBitRate ?: app.config.huyaConfig.maxBitRate) ?: 10000
+    val maxUserBitRate = (config.maxBitRate ?: app.config.huyaConfig.maxBitRate) ?: 10000
     // user selected cdn
-    var preselectedCdn = primaryCdn ?: app.config.huyaConfig.primaryCdn
-    preselectedCdn = preselectedCdn.uppercase()
+    val preselectedCdn = (config.primaryCdn ?: app.config.huyaConfig.primaryCdn).uppercase()
 
     // drop all streams with bit rate higher than user defined max bit rate
     val selectedCdnStreams = withContext(Dispatchers.Default) {
-      streams.filter {
+      streams.asSequence().filter {
         it.bitrate <= maxUserBitRate
       }.groupBy {
         it.extras["cdn"]
-      }.run {
-        @Suppress("UNCHECKED_CAST")
-        this as Map<String, List<StreamInfo>>
-
-        if (preselectedCdn !in this) {
-          logger.info("${streamer.name} no streams found for $preselectedCdn, choosing the best available")
-
+      }.let { cdnGroups ->
+        cdnGroups[preselectedCdn]?.takeIf { it.isNotEmpty() } ?: run {
+          debug("streams : {}", streams)
+          debug("filtered streams : {}", this)
+          info("cdn($preselectedCdn) has no streams, choosing the best available")
           // get the best available cdn
-          // obv, preselectedCdn is not in the exclude list because is not in the map,
+          // obv, preselectedCdn is not in the exclude list because is not present in the map
           // so we can safely pass an empty array
-          val bestCdn = this.getBestStreamByPriority(emptyArray())
-          logger.info("${streamer.name} best available cdn is $bestCdn")
-          bestCdn
-        } else {
-          this[preselectedCdn] ?: throw IllegalStateException("${streamer.name} no streams found")
+          val computeResult = cdnGroups.getBestStreamByPriority(emptyArray())
+          if (computeResult.isErr) {
+            return@run emptyList()
+          }
+          computeResult.get()!!.also {
+            info("best available cdn stream list: {}", it)
+          }
         }
       }.sortedByDescending { it.bitrate }
     }
 
-    // prioritize flv format if user defined source format is not available
-    return selectedCdnStreams.maxByOrNull { it.format == userPreferredFormat }
-      ?: selectedCdnStreams.filter { it.format == VideoFormat.flv }.maxByOrNull { it.bitrate }
-      ?: throw IllegalStateException("${streamer.name} no streams found")
-  }
-}
+    if (selectedCdnStreams.isEmpty()) return Err(ExtractorError.NoStreamsFound)
 
-private fun Map<String, List<StreamInfo>>.getBestStreamByPriority(excludeCdns: Array<String>): List<StreamInfo> {
-  // sort list desc according to priority
-  // priority is the same for all streams of the same cdn
-  val sortedCdnStreams = this.toList().sortedByDescending { it.second.firstOrNull()?.priority }
-  // get the first cdn that is not in the exclude list
-  val bestCdn = sortedCdnStreams.firstOrNull { it.first !in excludeCdns }?.first
-  return this[bestCdn]!!
+    val preferredFormatStream = selectedCdnStreams.filter { it.format == userPreferredFormat }.maxByOrNull { it.bitrate }
+
+    debug("user preferred format stream: {}", preferredFormatStream)
+    if (preferredFormatStream != null && preferredFormatStream.bitrate.toInt() != maxUserBitRate) {
+      warn("user preferred bitrate {} is not available, falling back to the best available: {}", maxUserBitRate, preferredFormatStream.bitrate)
+    }
+    // prioritize flv format if user defined source format is not available
+    val flvFormatStreams = { selectedCdnStreams.filter { it.format == VideoFormat.flv }.maxByOrNull { it.bitrate } }
+
+    return Ok(preferredFormatStream ?: flvFormatStreams() ?: selectedCdnStreams.first())
+
+  }
+
+  private fun Map<String?, List<StreamInfo>>.getBestStreamByPriority(excludeCdns: Array<String>): Result<List<StreamInfo>, ExtractorError> {
+
+    // if no streams found, return error
+    if (this.isEmpty()) {
+      return Err(ExtractorError.NoStreamsFound)
+    }
+
+    // sort list desc according to priority
+    // priority of same cdn streams should be the same
+    val sortedCdnStreams = this.toList().sortedByDescending { it.second.firstOrNull()?.priority }
+
+    // if exclude list is empty, return the first priority cdn streams
+    if (excludeCdns.isEmpty()) {
+      return Ok(sortedCdnStreams.first().second)
+    }
+    // get the first cdn that is not in the exclude list
+    val bestCdn = sortedCdnStreams.first { it.first !in excludeCdns }.first
+    val bestCdnStreams = this[bestCdn] ?: run {
+      // no alternative cdn found, return the first priority cdn
+      sortedCdnStreams.first().second
+    }
+    return Ok(bestCdnStreams)
+  }
 }

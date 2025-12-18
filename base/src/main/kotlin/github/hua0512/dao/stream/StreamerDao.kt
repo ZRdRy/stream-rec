@@ -57,11 +57,17 @@ interface StreamerDao : BaseDao<StreamerEntity> {
   @Query("SELECT COUNT(*) FROM streamer WHERE is_template = 0 AND template_id = :templateId")
   suspend fun countByTemplateId(templateId: StreamerId): Long
 
-  @Query("SELECT * FROM streamer WHERE is_active = 1 AND is_template = 0")
+  @Query("SELECT * FROM streamer WHERE state != 5 AND is_template = 0")
   suspend fun getActivesNonTemplates(): List<StreamerEntity>
 
-  @Query("SELECT * FROM streamer WHERE is_active = 0 AND is_template = 0")
+  @Query("SELECT * FROM streamer WHERE state = 5 AND is_template = 0")
   suspend fun getInactivesNonTemplates(): List<StreamerEntity>
+
+  @Query("SELECT * FROM streamer WHERE state IN (1,3,4,6) AND is_template = 0")
+  suspend fun getLiveNonTemplatesStreamers(): List<StreamerEntity>
+
+  @Query("SELECT * FROM streamer WHERE state IN (0,2) AND is_template = 0")
+  suspend fun getNonLiveNonTemplatesStreamers(): List<StreamerEntity>
 
   @Query("SELECT * FROM streamer WHERE is_template = 1")
   suspend fun getTemplates(): List<StreamerEntity>

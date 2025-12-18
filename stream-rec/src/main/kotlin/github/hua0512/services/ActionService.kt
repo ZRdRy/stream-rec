@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,20 +34,14 @@ import github.hua0512.data.upload.UploadAction
 import github.hua0512.data.upload.UploadConfig
 import github.hua0512.data.upload.UploadData
 import github.hua0512.utils.*
-import github.hua0512.utils.deleteFile
 import github.hua0512.utils.process.InputSource
 import github.hua0512.utils.process.Redirect
 import kotlinx.coroutines.async
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.io.File
-import kotlin.io.path.Path
-import kotlin.io.path.copyTo
-import kotlin.io.path.createParentDirectories
-import kotlin.io.path.moveTo
-import kotlin.io.path.name
+import kotlin.io.path.*
 
 /**
  * ActionService is responsible for running actions on the stream data
@@ -101,7 +95,7 @@ class ActionService(private val app: App, private val uploadService: UploadServi
     when (this) {
       is RcloneAction -> {
         UploadAction(
-          time = Clock.System.now().toEpochMilliseconds(),
+          time = kotlin.time.Clock.System.now().toEpochMilliseconds(),
           files = dataList,
           uploadConfig = UploadConfig.RcloneConfig(
             rcloneOperation = this.rcloneOperation,
@@ -120,13 +114,18 @@ class ActionService(private val app: App, private val uploadService: UploadServi
           val downloadConfig = streamer.templateStreamer?.downloadConfig ?: streamer.downloadConfig
           val downloadOutputFolder: File? = (downloadConfig?.outputFolder?.nonEmptyOrNull() ?: app.config.outputFolder).let {
             val instant = Instant.fromEpochSeconds(streamData.dateStart!!)
-            val path = it.replacePlaceholders(streamer.name, streamData.title, instant)
-            Path(path).toFile().also { file ->
-              // if the folder does not exist, then it should be an error
-              if (!file.exists()) {
-                logger.error("Output folder $this does not exist")
+            val path = it.replacePlaceholders(streamer.name, streamData.title, streamer.platform.name, instant)
+            Path(path).let { path ->
+              if (!path.exists()) {
+                logger.error("Output folder $path does not exist")
                 return@let null
               }
+
+              if (!path.isDirectory()) {
+                logger.error("Output folder $path is not a directory")
+                return@let null
+              }
+              path.toFile()
             }
           }
           // files + danmu files
@@ -182,7 +181,6 @@ class ActionService(private val app: App, private val uploadService: UploadServi
         }
       }
 
-      else -> throw UnsupportedOperationException("Invalid action: $this")
     }
   }
 

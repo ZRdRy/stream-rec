@@ -3,7 +3,7 @@
  *
  * Stream-rec  https://github.com/hua0512/stream-rec
  *
- * Copyright (c) 2024 hua0512 (https://github.com/hua0512)
+ * Copyright (c) 2025 hua0512 (https://github.com/hua0512)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,39 +26,52 @@
 
 package github.hua0512.flv.utils
 
-import github.hua0512.flv.data.avc.AvcPacketType
-import github.hua0512.flv.data.sound.AACPacketType
-import github.hua0512.flv.data.tag.FlvAudioTagData
 import github.hua0512.flv.data.tag.FlvVideoTagData
-import github.hua0512.flv.data.video.FlvVideoFrameType
+import github.hua0512.flv.data.video.FlvVideoCodecId
+import github.hua0512.flv.data.video.VideoFourCC
+import github.hua0512.flv.data.video.VideoPacketType
 
 /**
  * Checks if the video tag data is an AVC header.
  * @return True if the video tag data is an AVC header, false otherwise.
  */
-fun FlvVideoTagData.isAvcHeader(): Boolean = avcPacketType == AvcPacketType.AVC_SEQUENCE_HEADER
+/**
+ * Extension function to check if a video tag data is an AVC header
+ */
+fun FlvVideoTagData.isAvcHeader(): Boolean {
+  return when {
+    codecId == FlvVideoCodecId.AVC && packetType == VideoPacketType.SEQUENCE_HEADER -> true
+    codecId == FlvVideoCodecId.EX_HEADER && fourCC == VideoFourCC.AVC1 &&
+            packetType == VideoPacketType.SEQUENCE_HEADER -> true
+
+    else -> false
+  }
+}
 
 /**
- * Checks if the video tag data is an AVC NALU.
- * @return True if the video tag data is an AVC NALU, false otherwise.
+ * Extension function to check if a video tag data is an AVC NALU
  */
-fun FlvVideoTagData.isAvcNalu(): Boolean = avcPacketType == AvcPacketType.AVC_NALU
+fun FlvVideoTagData.isAvcNalu(): Boolean {
+  return when {
+    codecId == FlvVideoCodecId.AVC && packetType == VideoPacketType.NALU -> true
+    codecId == FlvVideoCodecId.EX_HEADER && fourCC == VideoFourCC.AVC1 &&
+            packetType == VideoPacketType.NALU -> true
+
+    else -> false
+  }
+}
 
 /**
- * Checks if the video tag data is an AVC end of sequence.
- * @return True if the video tag data is an AVC end of sequence, false otherwise.
+ * Extension function to check if a video tag data is an AVC end of sequence
  */
-fun FlvVideoTagData.isAvcEndOfSequence(): Boolean = avcPacketType == AvcPacketType.AVC_END_OF_SEQUENCE
+fun FlvVideoTagData.isAvcEndOfSequence(): Boolean {
+  return when {
+    codecId == FlvVideoCodecId.AVC && packetType == VideoPacketType.END_OF_SEQUENCE -> true
+    codecId == FlvVideoCodecId.EX_HEADER && fourCC == VideoFourCC.AVC1 &&
+            packetType == VideoPacketType.END_OF_SEQUENCE -> true
 
-/**
- * Checks if the video tag data is a key frame.
- * @return True if the video tag data is a key frame, false otherwise.
- */
-fun FlvVideoTagData.isKeyFrame(): Boolean = frameType == FlvVideoFrameType.KEY_FRAME
+    else -> false
+  }
+}
 
 
-/**
- * Checks if the audio tag data is an AAC header.
- * @return True if the audio tag data is an AAC header, false otherwise.
- */
-fun FlvAudioTagData.isAacHeader(): Boolean = packetType == AACPacketType.SequenceHeader

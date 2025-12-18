@@ -38,3 +38,8 @@ out/
 
 ### VS Code ###
 .vscode/
+
+### Ignore env files ###
+*.env
+.env*.local
+TODO.md
